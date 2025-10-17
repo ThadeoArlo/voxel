@@ -1,0 +1,731 @@
+<!DOCTYPE html>
+<html>
+	<head>
+		<meta charset="utf-8" />
+		<meta name="viewport" content="width=device-width, initial-scale=1" />
+		<title>Track Viewer</title>
+		<style>
+			html,
+			body {
+				height: 100%;
+				margin: 0;
+				background: #0f0f12;
+				color: #eaeaea;
+				font-family: system-ui, -apple-system, sans-serif;
+			}
+			#hud {
+				position: absolute;
+				top: 10px;
+				left: 10px;
+				background: rgba(0, 0, 0, 0.5);
+				padding: 8px 10px;
+				border-radius: 6px;
+				z-index: 10;
+			}
+			/* removed separate #ui container; controls are combined under #hud */
+			/* Stack controls in HUD to avoid overlap */
+			#hud input[type='file'],
+			#hud select,
+			#hud button {
+				display: block;
+				margin-top: 6px;
+			}
+			button {
+				margin-right: 6px;
+				border: 1px solid #444;
+				background: #333;
+				color: #eee;
+				padding: 4px 8px;
+				border-radius: 3px;
+				cursor: pointer;
+			}
+			button:hover {
+				background: #444;
+			}
+			.close-btn {
+				border-color: #ffaa00;
+				background: #664400;
+			}
+			.close-btn:hover {
+				background: #886600;
+			}
+			.wide-btn {
+				border-color: #00aaff;
+				background: #004466;
+			}
+			.wide-btn:hover {
+				background: #006688;
+			}
+			.ring-btn {
+				border-color: #cc66ff;
+				background: #442255;
+			}
+			.ring-btn:hover {
+				background: #663377;
+			}
+			#flash {
+				position: absolute;
+				top: 10px;
+				left: 10px;
+				width: 24px;
+				height: 24px;
+				border-radius: 4px;
+				background: #ffffff;
+				opacity: 0;
+				z-index: 11;
+				box-shadow: 0 0 16px rgba(255, 255, 255, 0.8);
+				transition: opacity 80ms ease;
+			}
+			#flash.on {
+				opacity: 1;
+			}
+			#legend {
+				margin-top: 8px;
+				font-size: 12px;
+				color: #bbb;
+			}
+			.legend-row {
+				display: flex;
+				align-items: center;
+				margin-top: 4px;
+			}
+			.swatch {
+				width: 12px;
+				height: 12px;
+				border-radius: 50%;
+				margin-right: 6px;
+				display: inline-block;
+			}
+		</style>
+		<script type="importmap">
+			{
+				"imports": {
+					"three": "https://unpkg.com/three@0.160.0/build/three.module.js"
+				}
+			}
+		</script>
+	</head>
+	<body>
+		<div id="flash"></div>
+		<div id="hud">
+			Load a track.json:
+			<input id="file" type="file" accept="application/json" />
+			<div style="margin-top: 8px; font-size: 12px; color: #bbb">Scenario:</div>
+			<select id="scenario">
+				<option value="straight">A - Straight path</option>
+				<option value="curved">B - Curved path</option>
+				<option value="curved3">C - 3 objects (curved)</option>
+			</select>
+			<label
+				id="includeSimRow"
+				style="display: none; margin-top: 6px; font-size: 12px; color: #bbb"
+			>
+				<input id="includeSim" type="checkbox" /> Include simulation
+			</label>
+			<label
+				id="pathsRow"
+				style="margin-top: 6px; font-size: 12px; color: #bbb"
+			>
+				<input id="showPaths" type="checkbox" /> Show flight paths
+			</label>
+			<button id="start">Start flight</button>
+			<div id="legend">
+				<div class="legend-row">
+					<span class="swatch" style="background: #ff5555"></span> Simulation
+				</div>
+				<div class="legend-row">
+					<span class="swatch" style="background: #55ffcc"></span>
+					Reconstruction
+				</div>
+			</div>
+			<div style="margin-top: 10px; font-size: 12px; color: #888">
+				Setup 1 (1-2m apart)
+			</div>
+			<button id="setup1_pov1" class="close-btn">POV 1</button>
+			<button id="setup1_pov2" class="close-btn">POV 2</button>
+			<button id="setup1_pov3" class="close-btn">POV 3</button>
+			<div style="margin: 8px 0; font-size: 12px; color: #888">
+				Setup 2 (6m apart)
+			</div>
+			<button id="setup2_pov1" class="wide-btn">POV 1</button>
+			<button id="setup2_pov2" class="wide-btn">POV 2</button>
+			<button id="setup2_pov3" class="wide-btn">POV 3</button>
+			<div style="margin: 8px 0; font-size: 12px; color: #888">
+				Setup 3 (360° around object)
+			</div>
+			<button id="setup3_pov1" class="ring-btn">POV 1</button>
+			<button id="setup3_pov2" class="ring-btn">POV 2</button>
+			<button id="setup3_pov3" class="ring-btn">POV 3</button>
+		</div>
+		<script type="module">
+			import * as THREE from 'three';
+			import { OrbitControls } from 'https://unpkg.com/three@0.160.0/examples/jsm/controls/OrbitControls.js';
+
+			THREE.Object3D.DEFAULT_UP.set(0, 0, 1);
+			const scene = new THREE.Scene();
+			scene.background = new THREE.Color(0x0f0f12);
+			const camera = new THREE.PerspectiveCamera(
+				60,
+				innerWidth / innerHeight,
+				0.1,
+				1e7
+			);
+			const renderer = new THREE.WebGLRenderer({ antialias: true });
+			renderer.setSize(innerWidth, innerHeight);
+			document.body.appendChild(renderer.domElement);
+			const controls = new OrbitControls(camera, renderer.domElement);
+			controls.enableDamping = true;
+
+			const grid = new THREE.GridHelper(2000, 80, 0x666666, 0x333333);
+			grid.rotateX(Math.PI / 2);
+			scene.add(grid);
+			const plane = new THREE.Mesh(
+				new THREE.PlaneGeometry(2000, 2000),
+				new THREE.MeshBasicMaterial({
+					color: 0x0a3a6a,
+					transparent: true,
+					opacity: 0.08,
+				})
+			);
+			scene.add(plane);
+			scene.add(
+				new THREE.ArrowHelper(
+					new THREE.Vector3(1, 0, 0),
+					new THREE.Vector3(0, 0, 0),
+					300,
+					0xff5555,
+					60,
+					30
+				)
+			);
+			scene.add(
+				new THREE.ArrowHelper(
+					new THREE.Vector3(0, 1, 0),
+					new THREE.Vector3(0, 0, 0),
+					300,
+					0x55ff55,
+					60,
+					30
+				)
+			);
+			scene.add(
+				new THREE.ArrowHelper(
+					new THREE.Vector3(0, 0, 1),
+					new THREE.Vector3(0, 0, 0),
+					300,
+					0x5599ff,
+					60,
+					30
+				)
+			);
+
+			camera.position.set(0, -900, 200);
+			camera.lookAt(0, 0, 300);
+
+			// removed standalone dot: reconstruction uses fileActors, simulation uses simActors
+
+			// --- Loaded track playback (supports single or multiple tracks) ---
+			let fileTracks = [];
+			let fileActors = [];
+			let filePathLines = [];
+			let fileIdx = 0;
+			let fileMaxLen = 0;
+			let filePlaybackFps = 30;
+			let fileAcc = 0;
+			let filePlaying = false;
+			function clearFileActors() {
+				for (const m of fileActors) {
+					if (m && m.parent) m.parent.remove(m);
+				}
+				fileActors = [];
+				for (const l of filePathLines) {
+					if (l && l.parent) l.parent.remove(l);
+				}
+				filePathLines = [];
+			}
+			function ensureFileActors(n) {
+				const palette = [
+					0x55ffcc, 0x33ddaa, 0x88ffee, 0x22aa88, 0xbbffee, 0x99ffdd,
+				];
+				while (fileActors.length < n) {
+					const color = palette[fileActors.length % palette.length];
+					const m = new THREE.Mesh(
+						new THREE.SphereGeometry(8, 16, 12),
+						new THREE.MeshBasicMaterial({ color })
+					);
+					scene.add(m);
+					fileActors.push(m);
+				}
+				for (let i = n; i < fileActors.length; i++)
+					fileActors[i].visible = false;
+				for (let i = 0; i < n; i++) fileActors[i].visible = true;
+			}
+
+			function buildFilePaths() {
+				// Remove existing
+				for (const l of filePathLines) {
+					if (l && l.parent) l.parent.remove(l);
+				}
+				filePathLines = [];
+				const show = document.getElementById('showPaths')?.checked;
+				if (!show) return;
+				for (let i = 0; i < fileTracks.length; i++) {
+					const tr = fileTracks[i];
+					if (!tr || tr.length < 2) continue;
+					const pts = [];
+					for (const p of tr) {
+						pts.push(new THREE.Vector3(p.x, p.y, p.z));
+					}
+					const geom = new THREE.BufferGeometry().setFromPoints(pts);
+					const mat = new THREE.LineBasicMaterial({
+						color: 0x55ffcc,
+						linewidth: 2,
+					});
+					const line = new THREE.Line(geom, mat);
+					scene.add(line);
+					filePathLines.push(line);
+				}
+			}
+
+			// --- Simulation scenarios (procedural flight) ---
+			let simActors = []; // { mesh, pathFn }
+			let simPathLines = [];
+			let simPlaying = false;
+			let simStart = 0;
+			let simDurationSec = 8.0;
+			function clearSimActors() {
+				for (const a of simActors) {
+					if (a.mesh && a.mesh.parent) a.mesh.parent.remove(a.mesh);
+				}
+				simActors = [];
+				for (const l of simPathLines) {
+					if (l && l.parent) l.parent.remove(l);
+				}
+				simPathLines = [];
+			}
+			function addActor(color = 0xffcc00, size = 8) {
+				const m = new THREE.Mesh(
+					new THREE.SphereGeometry(size, 16, 12),
+					new THREE.MeshBasicMaterial({ color })
+				);
+				scene.add(m);
+				return m;
+			}
+			function buildScenario(name) {
+				clearSimActors();
+				simDurationSec = 8.0;
+				if (name === 'straight') {
+					const m = addActor(0xff5555, 8);
+					const p0 = new THREE.Vector3(-200, 50, 50);
+					const p1 = new THREE.Vector3(200, 80, 650);
+					simActors.push({
+						mesh: m,
+						pathFn: (t) => new THREE.Vector3().lerpVectors(p0, p1, t),
+					});
+				} else if (name === 'curved') {
+					const m = addActor(0xff5555, 8);
+					simActors.push({
+						mesh: m,
+						pathFn: (t) => {
+							const x = -250 + 500 * t;
+							const y = 80 + 100 * Math.sin(Math.PI * 1.5 * t);
+							const z = 100 + 520 * t + 80 * Math.sin(Math.PI * 2 * t);
+							return new THREE.Vector3(x, y, z);
+						},
+					});
+				} else if (name === 'curved3') {
+					const m1 = addActor(0xff5555, 8);
+					const m2 = addActor(0xff5555, 8);
+					const m3 = addActor(0xff5555, 8);
+					// Two similar paths side-by-side (Y offset)
+					simActors.push({
+						mesh: m1,
+						pathFn: (t) => {
+							const x = -260 + 520 * t;
+							const y = 60 + 90 * Math.sin(Math.PI * 1.6 * t) + 40;
+							const z = 90 + 540 * t + 70 * Math.sin(Math.PI * 2.2 * t);
+							return new THREE.Vector3(x, y, z);
+						},
+					});
+					simActors.push({
+						mesh: m2,
+						pathFn: (t) => {
+							const x = -260 + 520 * t;
+							const y = 60 + 90 * Math.sin(Math.PI * 1.6 * t) - 40;
+							const z = 90 + 540 * t + 70 * Math.sin(Math.PI * 2.2 * t);
+							return new THREE.Vector3(x, y, z);
+						},
+					});
+					// Third different path
+					simActors.push({
+						mesh: m3,
+						pathFn: (t) => {
+							const x = -300 + 600 * t;
+							const y = 50 - 120 * Math.cos(Math.PI * t);
+							const z = 80 + 520 * t + 120 * Math.sin(Math.PI * 1.2 * t);
+							return new THREE.Vector3(x, y, z);
+						},
+					});
+					simDurationSec = 9.0;
+				} else {
+					// default to straight
+					return buildScenario('straight');
+				}
+			}
+
+			function buildSimPaths() {
+				for (const l of simPathLines) {
+					if (l && l.parent) l.parent.remove(l);
+				}
+				simPathLines = [];
+				const show = document.getElementById('showPaths')?.checked;
+				if (!show) return;
+				// Bake ~200 points along each sim path
+				const SAMPLES = 200;
+				for (const a of simActors) {
+					const pts = [];
+					for (let i = 0; i <= SAMPLES; i++) {
+						const t = i / SAMPLES;
+						const p = a.pathFn(t);
+						if (p) pts.push(p.clone());
+					}
+					if (pts.length >= 2) {
+						const geom = new THREE.BufferGeometry().setFromPoints(pts);
+						const mat = new THREE.LineBasicMaterial({
+							color: 0xff5555,
+							linewidth: 2,
+						});
+						const line = new THREE.Line(geom, mat);
+						scene.add(line);
+						simPathLines.push(line);
+					}
+				}
+			}
+			function flash(color = '#ffffff') {
+				const f = document.getElementById('flash');
+				f.style.background = color;
+				f.classList.add('on');
+				setTimeout(() => f.classList.remove('on'), 180);
+			}
+			function startFlight() {
+				const sel = document.getElementById('scenario');
+				const includeSim = document.getElementById('includeSim');
+				const includeSimRow = document.getElementById('includeSimRow');
+				const name = sel ? sel.value : 'straight';
+				const hasTracks = fileTracks.length > 0;
+				const shouldPlaySim = hasTracks
+					? includeSim && includeSim.checked
+					: true;
+				if (shouldPlaySim) {
+					buildScenario(name);
+					simStart = performance.now();
+					simPlaying = true;
+					flash('#ffffff');
+					buildSimPaths();
+				} else {
+					clearSimActors();
+					simPlaying = false;
+				}
+				if (hasTracks) {
+					fileIdx = 0;
+					fileAcc = 0;
+					ensureFileActors(fileTracks.length);
+					filePlaying = true;
+					buildFilePaths();
+				}
+				// Hide sim include when there is no track
+				includeSimRow.style.display = hasTracks ? 'block' : 'none';
+			}
+
+			// --- POV integration from Simulation ---
+			const closeBaseline = 150; // ~1.5m
+			const wideBaseline = 600; // ~6m
+			const camHeight = 100;
+			const center = new THREE.Vector3(0, 0, 300);
+			const closeCamPos = [
+				new THREE.Vector3(-closeBaseline, -800, camHeight),
+				new THREE.Vector3(0, -800, camHeight),
+				new THREE.Vector3(closeBaseline, -800, camHeight),
+			];
+			const wideCamPos = [
+				new THREE.Vector3(-wideBaseline, -800, camHeight),
+				new THREE.Vector3(0, -800, camHeight),
+				new THREE.Vector3(wideBaseline, -800, camHeight),
+			];
+			const closeArrows = [];
+			const wideArrows = [];
+			const ringArrows = [];
+			let selectedPOV = null;
+			function makeArrows() {
+				closeCamPos.forEach((pos, i) => {
+					const dir = center.clone().sub(pos).normalize();
+					const a = new THREE.ArrowHelper(
+						dir,
+						pos.clone(),
+						80,
+						0xffaa00,
+						15,
+						8
+					);
+					a.userData = { setup: 'close', index: i };
+					scene.add(a);
+					closeArrows.push(a);
+				});
+				wideCamPos.forEach((pos, i) => {
+					const dir = center.clone().sub(pos).normalize();
+					const a = new THREE.ArrowHelper(
+						dir,
+						pos.clone(),
+						60,
+						0x00aaff,
+						12,
+						6
+					);
+					a.userData = { setup: 'wide', index: i };
+					scene.add(a);
+					wideArrows.push(a);
+				});
+				// Setup 3 ring around center (match cam_config setup3 positions)
+				const ringCamPos = [
+					new THREE.Vector3(1200, 0, 120),
+					new THREE.Vector3(-600, 1039.230484, 120),
+					new THREE.Vector3(-600, -1039.230484, 120),
+				];
+				ringCamPos.forEach((pos, i) => {
+					const dir = center.clone().sub(pos).normalize();
+					const a = new THREE.ArrowHelper(
+						dir,
+						pos.clone(),
+						70,
+						0xcc66ff,
+						14,
+						7
+					);
+					a.userData = { setup: 'ring', index: i };
+					scene.add(a);
+					ringArrows.push(a);
+				});
+			}
+			makeArrows();
+			function setClosePOV(i) {
+				const p = closeCamPos[i].clone();
+				camera.position.copy(p);
+				camera.up.set(0, 0, 1);
+				camera.lookAt(center);
+				controls.target.copy(center);
+				controls.update();
+				selectedPOV = { setup: 'close', index: i };
+			}
+			function setWidePOV(i) {
+				const p = wideCamPos[i].clone();
+				camera.position.copy(p);
+				camera.up.set(0, 0, 1);
+				camera.lookAt(center);
+				controls.target.copy(center);
+				controls.update();
+				selectedPOV = { setup: 'wide', index: i };
+			}
+			function updateArrowVisibility() {
+				if (!selectedPOV) {
+					closeArrows.forEach((a) => (a.visible = true));
+					wideArrows.forEach((a) => (a.visible = true));
+					ringArrows.forEach((a) => (a.visible = true));
+					return;
+				}
+				closeArrows.forEach((a) => (a.visible = false));
+				wideArrows.forEach((a) => (a.visible = false));
+				ringArrows.forEach((a) => (a.visible = false));
+				const threshold = 50;
+				let base = null;
+				if (selectedPOV.setup === 'close')
+					base = closeCamPos[selectedPOV.index];
+				if (selectedPOV.setup === 'wide') base = wideCamPos[selectedPOV.index];
+				if (selectedPOV.setup === 'ring') {
+					const ringCamPos = [
+						new THREE.Vector3(1200, 0, 120),
+						new THREE.Vector3(-600, 1039.230484, 120),
+						new THREE.Vector3(-600, -1039.230484, 120),
+					];
+					base = ringCamPos[selectedPOV.index];
+				}
+				if (base && camera.position.distanceTo(base) > threshold) {
+					closeArrows.forEach((a) => (a.visible = true));
+					wideArrows.forEach((a) => (a.visible = true));
+					ringArrows.forEach((a) => (a.visible = true));
+				}
+			}
+
+			// --- Track playback ---
+			let lastTs = performance.now();
+			// With unified HUD, no layout adjustments are necessary
+			function layoutPanels() {}
+			function animate() {
+				requestAnimationFrame(animate);
+				const nowTs = performance.now();
+				const dt = (nowTs - lastTs) / 1000.0;
+				lastTs = nowTs;
+				// File-based multi-track playback (paused until Start)
+				if (fileTracks.length > 0) {
+					for (let i = 0; i < fileTracks.length; i++) {
+						const tr = fileTracks[i];
+						if (!tr || tr.length === 0) continue;
+						const p = tr[Math.min(fileIdx, tr.length - 1)];
+						if (p && fileActors[i]) fileActors[i].position.set(p.x, p.y, p.z);
+					}
+					// advance at target playback fps only when playing
+					if (filePlaying) {
+						fileAcc += dt;
+						const step = 1.0 / Math.max(1, filePlaybackFps);
+						while (fileAcc >= step) {
+							if (fileIdx < fileMaxLen - 1) fileIdx += 1;
+							fileAcc -= step;
+						}
+					}
+				}
+				// Simulation playback
+				if (simPlaying && simActors.length > 0) {
+					const elapsed = (performance.now() - simStart) / 1000.0;
+					let t = Math.min(1.0, Math.max(0.0, elapsed / simDurationSec));
+					for (const a of simActors) {
+						const p = a.pathFn(t);
+						if (p) a.mesh.position.copy(p);
+					}
+					if (t >= 1.0) {
+						simPlaying = false;
+						flash('#ff3355'); // end marker
+					}
+				}
+				// (no legacy single-dot tracking)
+				updateArrowVisibility();
+				controls.update();
+				renderer.render(scene, camera);
+			}
+			animate();
+
+			document.getElementById('file').addEventListener('change', (ev) => {
+				const f = ev.target.files && ev.target.files[0];
+				if (!f) return;
+				const reader = new FileReader();
+				reader.onload = () => {
+					try {
+						const data = JSON.parse(reader.result);
+						// Stop simulation playback and reset state
+						clearSimActors();
+						simPlaying = false;
+						// (no legacy single-dot or idx state)
+						// Normalize input to an array of tracks
+						let tracks = [];
+						if (Array.isArray(data)) {
+							// Single track array
+							tracks = [data];
+						} else if (data && Array.isArray(data.tracks)) {
+							tracks = data.tracks.map((t) =>
+								Array.isArray(t) ? t : t.points || []
+							);
+						} else {
+							alert(
+								'Unsupported track format (expected array or {tracks:[...]})'
+							);
+							return;
+						}
+						fileTracks = tracks;
+						fileMaxLen = tracks.reduce((m, t) => Math.max(m, t.length), 0);
+						fileIdx = 0;
+						fileAcc = 0;
+						filePlaying = false; // wait for Start button
+						ensureFileActors(fileTracks.length);
+						layoutPanels();
+						buildFilePaths();
+						// Show includeSim option only when a track is loaded
+						const includeSimRow = document.getElementById('includeSimRow');
+						if (includeSimRow) includeSimRow.style.display = 'block';
+					} catch (e) {
+						alert('Bad JSON');
+					}
+				};
+				reader.readAsText(f);
+			});
+
+			// POV buttons
+			document.getElementById('setup1_pov1').onclick = () => {
+				setClosePOV(0);
+				updateArrowVisibility();
+			};
+			document.getElementById('setup1_pov2').onclick = () => {
+				setClosePOV(1);
+				updateArrowVisibility();
+			};
+			document.getElementById('setup1_pov3').onclick = () => {
+				setClosePOV(2);
+				updateArrowVisibility();
+			};
+			document.getElementById('setup2_pov1').onclick = () => {
+				setWidePOV(0);
+				updateArrowVisibility();
+			};
+			document.getElementById('setup2_pov2').onclick = () => {
+				setWidePOV(1);
+				updateArrowVisibility();
+			};
+			document.getElementById('setup2_pov3').onclick = () => {
+				setWidePOV(2);
+				updateArrowVisibility();
+			};
+			// Setup 3: approximate 360° camera ring around center
+			document.getElementById('setup3_pov1').onclick = () => {
+				const p = new THREE.Vector3(1200, 0, 120);
+				camera.position.copy(p);
+				camera.up.set(0, 0, 1);
+				camera.lookAt(0, 0, 300);
+				controls.target.set(0, 0, 300);
+				controls.update();
+				selectedPOV = { setup: 'ring', index: 0 };
+				updateArrowVisibility();
+			};
+			document.getElementById('setup3_pov2').onclick = () => {
+				const p = new THREE.Vector3(-600, 1039.230484, 120);
+				camera.position.copy(p);
+				camera.up.set(0, 0, 1);
+				camera.lookAt(0, 0, 300);
+				controls.target.set(0, 0, 300);
+				controls.update();
+				selectedPOV = { setup: 'ring', index: 1 };
+				updateArrowVisibility();
+			};
+			document.getElementById('setup3_pov3').onclick = () => {
+				const p = new THREE.Vector3(-600, -1039.230484, 120);
+				camera.position.copy(p);
+				camera.up.set(0, 0, 1);
+				camera.lookAt(0, 0, 300);
+				controls.target.set(0, 0, 300);
+				controls.update();
+				selectedPOV = { setup: 'ring', index: 2 };
+				updateArrowVisibility();
+			};
+			document.getElementById('start').onclick = () => startFlight();
+			document
+				.getElementById('scenario')
+				.addEventListener('change', layoutPanels);
+			const simChk = document.getElementById('includeSim');
+			if (simChk) simChk.addEventListener('change', layoutPanels);
+			const pathsChk = document.getElementById('showPaths');
+			if (pathsChk)
+				pathsChk.addEventListener('change', () => {
+					buildFilePaths();
+					buildSimPaths();
+				});
+
+			// Default camera
+			camera.position.set(0, -900, 200);
+			camera.lookAt(0, 0, 300);
+
+			addEventListener('resize', () => {
+				camera.aspect = innerWidth / innerHeight;
+				camera.updateProjectionMatrix();
+				renderer.setSize(innerWidth, innerHeight);
+				layoutPanels();
+			});
+			layoutPanels();
+		</script>
+	</body>
+</html>

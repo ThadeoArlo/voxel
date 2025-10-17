@@ -1,0 +1,41 @@
+# OS
+.DS_Store
+
+# Python bytecode/cache
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+
+# Build artifacts
+build/
+dist/
+*.egg-info/
+.eggs/
+.pytest_cache/
+.cache/
+
+# Compiled extensions/binaries
+process_image_cpp*.so
+ray_voxel
+ray_voxel.exe
+
+# Project outputs (generated)
+outputs/
+screenshots/
+motionimages/
+videoProcessor/output/
+debug_gridtrack/
+voxel_grid.bin
+
+# Local media inputs
+*.mp4
+*.mov
+*.avi
+*.mkv
+

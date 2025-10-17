@@ -1,0 +1,146 @@
+<!DOCTYPE html>
+<html>
+	<head>
+		<meta charset="utf-8" />
+		<meta name="viewport" content="width=device-width, initial-scale=1" />
+		<title>Track Viewer</title>
+		<style>
+			html,
+			body {
+				height: 100%;
+				margin: 0;
+				background: #0f0f12;
+				color: #eaeaea;
+				font-family: system-ui, -apple-system, sans-serif;
+			}
+			#hud {
+				position: absolute;
+				top: 10px;
+				left: 10px;
+				background: rgba(0, 0, 0, 0.5);
+				padding: 8px 10px;
+				border-radius: 6px;
+				z-index: 10;
+			}
+		</style>
+		<script type="importmap">
+			{
+				"imports": {
+					"three": "https://unpkg.com/three@0.160.0/build/three.module.js"
+				}
+			}
+		</script>
+	</head>
+	<body>
+		<div id="hud">
+			Load a track.json:
+			<input id="file" type="file" accept="application/json" />
+		</div>
+		<script type="module">
+			import * as THREE from 'three';
+			import { OrbitControls } from 'https://unpkg.com/three@0.160.0/examples/jsm/controls/OrbitControls.js';
+
+			THREE.Object3D.DEFAULT_UP.set(0, 0, 1);
+			const scene = new THREE.Scene();
+			scene.background = new THREE.Color(0x0f0f12);
+			const camera = new THREE.PerspectiveCamera(
+				60,
+				innerWidth / innerHeight,
+				0.1,
+				1e7
+			);
+			const renderer = new THREE.WebGLRenderer({ antialias: true });
+			renderer.setSize(innerWidth, innerHeight);
+			document.body.appendChild(renderer.domElement);
+			const controls = new OrbitControls(camera, renderer.domElement);
+			controls.enableDamping = true;
+
+			const grid = new THREE.GridHelper(2000, 80, 0x666666, 0x333333);
+			grid.rotateX(Math.PI / 2);
+			scene.add(grid);
+			const plane = new THREE.Mesh(
+				new THREE.PlaneGeometry(2000, 2000),
+				new THREE.MeshBasicMaterial({
+					color: 0x0a3a6a,
+					transparent: true,
+					opacity: 0.08,
+				})
+			);
+			scene.add(plane);
+			scene.add(
+				new THREE.ArrowHelper(
+					new THREE.Vector3(1, 0, 0),
+					new THREE.Vector3(0, 0, 0),
+					300,
+					0xff5555,
+					60,
+					30
+				)
+			);
+			scene.add(
+				new THREE.ArrowHelper(
+					new THREE.Vector3(0, 1, 0),
+					new THREE.Vector3(0, 0, 0),
+					300,
+					0x55ff55,
+					60,
+					30
+				)
+			);
+			scene.add(
+				new THREE.ArrowHelper(
+					new THREE.Vector3(0, 0, 1),
+					new THREE.Vector3(0, 0, 0),
+					300,
+					0x5599ff,
+					60,
+					30
+				)
+			);
+
+			camera.position.set(0, -900, 200);
+			camera.lookAt(0, 0, 300);
+
+			let dot = new THREE.Mesh(
+				new THREE.SphereGeometry(8, 16, 12),
+				new THREE.MeshBasicMaterial({ color: 0xffcc00 })
+			);
+			scene.add(dot);
+
+			let track = [];
+			let idx = 0;
+			function animate() {
+				requestAnimationFrame(animate);
+				if (track.length > 0) {
+					const p = track[Math.min(idx, track.length - 1)];
+					dot.position.set(p.x, p.y, p.z);
+					if (idx < track.length - 1) idx += 1;
+				}
+				controls.update();
+				renderer.render(scene, camera);
+			}
+			animate();
+
+			document.getElementById('file').addEventListener('change', (ev) => {
+				const f = ev.target.files && ev.target.files[0];
+				if (!f) return;
+				const reader = new FileReader();
+				reader.onload = () => {
+					try {
+						track = JSON.parse(reader.result);
+						idx = 0;
+					} catch (e) {
+						alert('Bad JSON');
+					}
+				};
+				reader.readAsText(f);
+			});
+
+			addEventListener('resize', () => {
+				camera.aspect = innerWidth / innerHeight;
+				camera.updateProjectionMatrix();
+				renderer.setSize(innerWidth, innerHeight);
+			});
+		</script>
+	</body>
+</html>

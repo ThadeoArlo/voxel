@@ -1,0 +1,55 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+env/
+venv/
+.venv/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Node
+node_modules/
+
+# Project large outputs
+mask/output/**
+render/output/**
+zMisc/Pixeltovoxelprojector/output/**
+zMisc/Pixeltovoxelprojector/screenshots/**
+
+# Videos & binaries
+src/**/**/*.mp4
+src/**/**/*.mov
+src/**/**/*.avi
+*.bin
+*.npy
+
+# Large data files (small JSON files are OK, large ones handled by LFS)
+*.csv
+
+# Images (handled by LFS, but ignore very large ones)
+# *.png, *.jpg, etc. are now tracked by LFS
+
+# Archives
+*.zip
+*.tar
+*.tar.gz
+*.rar
+*.7z
+
+# Logs
+*.log
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Temporary files
+*.tmp
+*.temp
