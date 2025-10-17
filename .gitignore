@@ -16,15 +16,15 @@ Thumbs.db
 node_modules/
 
 # Project large outputs
-mask/output/**
-render/output/**
-zMisc/Pixeltovoxelprojector/output/**
-zMisc/Pixeltovoxelprojector/screenshots/**
+# mask/output/**
+# render/output/**
+# zMisc/Pixeltovoxelprojector/output/**
+# zMisc/Pixeltovoxelprojector/screenshots/**
 
 # Videos & binaries
-src/**/**/*.mp4
-src/**/**/*.mov
-src/**/**/*.avi
+# src/**/**/*.mp4
+# src/**/**/*.mov
+# src/**/**/*.avi
 *.bin
 *.npy
 
