@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import os, json, glob
+import re
 import numpy as np
 import cv2
 from pathlib import Path
@@ -139,7 +140,10 @@ def load_masks(folder: str):
     return files
 
 
-def reconstruct_from_masks(mask_folders, config_path, out_dir: Path, select_names=None):
+def reconstruct_from_masks(mask_folders, config_path, out_dir: Path, select_names=None,
+                          min_area: int = 50, close_kernel: int = 5,
+                          reproj_thresh_px: float = 4.0,
+                          log_stats: bool = False):
     out_dir.mkdir(parents=True, exist_ok=True)
     print(f"[info] Using camera config: {config_path}")
     all_cams = load_cam_config(str(config_path))
@@ -164,6 +168,8 @@ def reconstruct_from_masks(mask_folders, config_path, out_dir: Path, select_name
     print(f"[info] Frames to process (synced): {min_len}")
 
     track = []
+    angle_stats = []  # collect per-frame pairwise angles if logging
+    rms_stats = []
     last_pct = -1
     for i in range(min_len):
         centroids = []
@@ -175,8 +181,8 @@ def reconstruct_from_masks(mask_folders, config_path, out_dir: Path, select_name
                 continue
             if dims is None:
                 dims = (m.shape[1], m.shape[0])
-            # robust centroid from largest connected component
-            c = largest_component_centroid(m, min_area=50, close_kernel=5)
+            # robust centroid from largest connected component (tunable)
+            c = largest_component_centroid(m, min_area=int(min_area), close_kernel=int(close_kernel))
             centroids.append(c)
         if any(c is None for c in centroids):
             continue
@@ -191,7 +197,7 @@ def reconstruct_from_masks(mask_folders, config_path, out_dir: Path, select_name
         accept = False
         if P is not None:
             err = reprojection_error(cams, width, height, centroids, P)
-            if err <= 4.0:  # pixels
+            if err <= float(reproj_thresh_px):  # pixels
                 accept = True
         if not accept:
             # best-pair fallback among camera pairs
@@ -206,11 +212,20 @@ def reconstruct_from_masks(mask_folders, config_path, out_dir: Path, select_name
                 if e2 < best_err:
                     best_err = e2
                     best_P = P2
-            if best_P is not None and best_err <= 4.0:
+            if best_P is not None and best_err <= float(reproj_thresh_px):
                 P = best_P
                 accept = True
         if not accept:
             continue
+        if log_stats:
+            # pairwise angles between rays (degrees)
+            def ang(u, v):
+                dn = max(1e-9, np.linalg.norm(u) * np.linalg.norm(v))
+                cc = np.clip(float(np.dot(u, v)) / dn, -1.0, 1.0)
+                return float(np.degrees(np.arccos(cc)))
+            a01 = ang(rays[0], rays[1]); a02 = ang(rays[0], rays[2]); a12 = ang(rays[1], rays[2])
+            angle_stats.append((a01, a02, a12))
+            rms_stats.append(err)
         track.append({"t": i, "x": float(P[0]), "y": float(P[1]), "z": float(P[2])})
 
         # progress every ~5%
@@ -222,6 +237,15 @@ def reconstruct_from_masks(mask_folders, config_path, out_dir: Path, select_name
     out_json = out_dir / "track.json"
     json.dump(track, open(out_json, "w"), indent=2)
     print(f"[ok] Wrote {out_json} with {len(track)} points")
+    if log_stats and angle_stats:
+        A = np.array(angle_stats, dtype=np.float64)
+        rms = np.array(rms_stats, dtype=np.float64)
+        a_min = A.min(axis=0); a_mean = A.mean(axis=0); a_max = A.max(axis=0)
+        print(f"[stats] Pairwise ray angles (deg) min/mean/max: ")
+        print(f"        0-1: {a_min[0]:.1f}/{a_mean[0]:.1f}/{a_max[0]:.1f}")
+        print(f"        0-2: {a_min[1]:.1f}/{a_mean[1]:.1f}/{a_max[1]:.1f}")
+        print(f"        1-2: {a_min[2]:.1f}/{a_mean[2]:.1f}/{a_max[2]:.1f}")
+        print(f"[stats] RMS reprojection error (px) mean: {float(rms.mean()):.2f};  p50: {float(np.percentile(rms,50)):.2f}; p90: {float(np.percentile(rms,90)):.2f}")
     return out_json
 
 
@@ -230,15 +254,38 @@ def find_mask_folders_for_scene(scene: str, mask_root: Path):
     if not base.exists() or not base.is_dir():
         raise SystemExit(f"Scene masks not found at {base}")
 
-    preferred = [base / "1" / "masks", base / "2" / "masks", base / "3" / "masks"]
-    if all(p.exists() and p.is_dir() for p in preferred):
-        print(f"[info] Using preferred mask layout under {base}")
-        return preferred
+    # Prefer explicit POV digits 1/2/3 anywhere in the subfolder name (A21,A22,A23 etc.)
+    subs = [p for p in base.iterdir() if p.is_dir()]
+    def last_digit_key(p: Path):
+        s = p.name.strip().lower()
+        for ch in reversed(s):
+            if ch in '123':
+                return ch
+        return None
+    groups = {d: None for d in '123'}
+    for p in subs:
+        d = last_digit_key(p)
+        if d in groups and groups[d] is None:
+            m = p / 'masks'
+            groups[d] = m if m.exists() else p
+    ordered = []
+    for d in '123':
+        if groups[d] is None:
+            continue
+        m = groups[d]
+        if m.is_dir() and m.name != 'masks':
+            mm = m / 'masks'
+            if mm.exists():
+                m = mm
+        ordered.append(m)
+    if len(ordered) == 3:
+        print(f"[info] Using POV-inferred mask layout under {base} (1,2,3)")
+        return ordered
 
-    # Otherwise, pick first three subdirs that contain a 'masks' folder; sort by name for stable order
+    # Fallback: first 3 subdirs that contain 'masks' folder, sorted by name
     candidates = []
-    for child in sorted([p for p in base.iterdir() if p.is_dir()]):
-        m = child / "masks"
+    for child in sorted([p for p in subs if p.is_dir()]):
+        m = child / 'masks'
         if m.exists() and m.is_dir():
             candidates.append(m)
     if len(candidates) < 3:
@@ -247,18 +294,24 @@ def find_mask_folders_for_scene(scene: str, mask_root: Path):
     return candidates[:3]
 
 
-def reconstruct_scene(scene: str, mask_root: Path, config_path: Path, out_dir: Path):
+def reconstruct_scene(scene: str, mask_root: Path, config_path: Path, out_dir: Path,
+                      min_area: int = 50, close_kernel: int = 5, reproj_thresh_px: float = 4.0,
+                      log_stats: bool = False):
     print(f"[info] Reconstructing scene '{scene}'")
     mask_folders = find_mask_folders_for_scene(scene, mask_root)
-    # Derive setup number from scene like 'A1','B2' etc.
+    # Derive setup number from scene like 'A1', 'B2', or 'A1_1' (use first digit)
     setup_num = None
-    if scene and len(scene) >= 2 and scene[1:].isdigit():
-        setup_num = int(scene[1:])
+    if scene:
+        m = re.search(r"(\d)", scene)
+        if m:
+            setup_num = int(m.group(1))
     select_names = None
     if setup_num in (1, 2, 3):
         select_names = [f"setup{setup_num}_{i}" for i in (1, 2, 3)]
         print(f"[info] Selecting cameras: {select_names}")
-    return reconstruct_from_masks(mask_folders, config_path, out_dir, select_names=select_names)
+    return reconstruct_from_masks(mask_folders, config_path, out_dir, select_names=select_names,
+                                  min_area=min_area, close_kernel=close_kernel,
+                                  reproj_thresh_px=reproj_thresh_px, log_stats=log_stats)
 
 
 def main():
@@ -268,6 +321,10 @@ def main():
     ap.add_argument("--masks", nargs=3, help="Explicit three mask folders (overrides --scene)")
     ap.add_argument("--config", help="cam_config.json with exactly 3 cameras")
     ap.add_argument("--out", default="render/output", help="Output folder (or folder per scene)")
+    ap.add_argument("--min-area", type=int, default=50, help="Min area for largest-component centroid")
+    ap.add_argument("--close-kernel", type=int, default=5, help="Morphological close kernel (odd pixels)")
+    ap.add_argument("--reproj-thresh", type=float, default=4.0, help="Reprojection error threshold in pixels")
+    ap.add_argument("--log-stats", action="store_true", help="Print baseline angle and RMS reprojection stats")
     args = ap.parse_args()
 
     render_dir = Path(__file__).resolve().parent
@@ -288,7 +345,9 @@ def main():
 
     mask_root = Path(args.mask_root)
     out_dir = Path(args.out) / args.scene
-    reconstruct_scene(args.scene, mask_root, config_path, out_dir)
+    reconstruct_scene(args.scene, mask_root, config_path, out_dir,
+                      min_area=int(args.min_area), close_kernel=int(args.close_kernel),
+                      reproj_thresh_px=float(args.reproj_thresh), log_stats=bool(args.log_stats))
 
 
 if __name__ == "__main__":
