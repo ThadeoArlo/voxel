@@ -1,9 +1,0 @@
-numpy>=1.24
-pybind11>=2.11
-opencv-python>=4.10
-matplotlib>=3.8
-astropy>=6.0
-pyvista>=0.43
-vtk>=9.2 ; platform_system == "Darwin" and platform_machine == "arm64"
-scipy>=1.11
-
