@@ -869,12 +869,16 @@
 					b.className = 'setup3-btn';
 					b.textContent = name;
 					b.onclick = () => {
-						const p = computeSetup3Positions()[idx]?.pos;
-						if (p) {
+						const entry = computeSetup3Positions()[idx];
+						if (entry) {
+							const p = entry.pos;
+							const t = entry.pos
+								.clone()
+								.add(entry.dir.clone().multiplyScalar(500));
 							camera.position.copy(p);
 							camera.up.set(0, 0, 1);
-							camera.lookAt(0, 0, 300);
-							controls.target.set(0, 0, 300);
+							camera.lookAt(t);
+							controls.target.copy(t);
 							controls.update();
 							selectedPOV = { setup: 'setup3', index: idx };
 							updateArrowVisibility();
@@ -988,13 +992,16 @@
 					b.className = 'setup2-btn';
 					b.textContent = name;
 					b.onclick = () => {
-						const p =
-							setup2Arrows[idx]?.position ||
-							new THREE.Vector3(0, -setup2.distanceToCenter, setup2.heightZ);
+						const entry = computeSetup2Positions()[idx];
+						if (!entry) return;
+						const p = entry.pos;
+						const t = entry.pos
+							.clone()
+							.add(entry.dir.clone().multiplyScalar(500));
 						camera.position.copy(p);
 						camera.up.set(0, 0, 1);
-						camera.lookAt(0, 0, 300);
-						controls.target.set(0, 0, 300);
+						camera.lookAt(t);
+						controls.target.copy(t);
 						controls.update();
 						selectedPOV = { setup: 'setup2', index: idx };
 						updateArrowVisibility();

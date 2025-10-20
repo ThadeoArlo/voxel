@@ -92,3 +92,12 @@ Notes:
 - If your subject is off-center, adjust `--grid-center` in voxel commands
   (defaults to `0,0,300`).
 - All commands prefer absolute paths for robustness.
+
+CONFIG NOTES
+
+- cam_config.json
+  - Setup 1 when zoomed better result and got complete path, from far away
+    resulting path truncated.
+  - Setup 2 POVs narrow, json empty, even after zoom i get result but very bad.
+- cam_config_1.json
+  - asdf
