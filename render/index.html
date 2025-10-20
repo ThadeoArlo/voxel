@@ -42,26 +42,18 @@
 			button:hover {
 				background: #444;
 			}
-			.setup1-btn {
-				border-color: #ffaa00;
-				background: #664400;
+			/* unified save button */
+			.save-btn {
+				border-color: #777;
+				background: #555;
+				color: #eee;
 			}
-			.setup1-btn:hover {
-				background: #886600;
-			}
-			.setup2-btn {
+			.setup3-btn {
 				border-color: #00aaff;
 				background: #004466;
 			}
-			.setup2-btn:hover {
-				background: #006688;
-			}
-			.setup3-btn {
-				border-color: #cc66ff;
-				background: #442255;
-			}
 			.setup3-btn:hover {
-				background: #663377;
+				background: #006688;
 			}
 			.setup4-btn {
 				border-color: #ff4444;
@@ -146,18 +138,6 @@
 					Reconstruction
 				</div>
 			</div>
-			<div style="margin-top: 10px; font-size: 12px; color: #888">Setup 1</div>
-			<button id="setup1_pov1" class="setup1-btn">POV 1</button>
-			<button id="setup1_pov2" class="setup1-btn">POV 2</button>
-			<button id="setup1_pov3" class="setup1-btn">POV 3</button>
-			<div style="margin: 8px 0; font-size: 12px; color: #888">Setup 2</div>
-			<button id="setup2_pov1" class="setup2-btn">POV 1</button>
-			<button id="setup2_pov2" class="setup2-btn">POV 2</button>
-			<button id="setup2_pov3" class="setup2-btn">POV 3</button>
-			<div style="margin: 8px 0; font-size: 12px; color: #888">Setup 3</div>
-			<button id="setup3_pov1" class="setup3-btn">POV 1</button>
-			<button id="setup3_pov2" class="setup3-btn">POV 2</button>
-			<button id="setup3_pov3" class="setup3-btn">POV 3</button>
 		</div>
 		<script type="module">
 			import * as THREE from 'three';
@@ -524,23 +504,9 @@
 			}
 
 			// --- POV integration from Simulation ---
-			const closeBaseline = 150; // ~1.5m
-			const wideBaseline = 600; // ~6m
-			const camHeight = 100;
+			// Removed Setup 1 and 2
 			const center = new THREE.Vector3(0, 0, 300);
-			const closeCamPos = [
-				new THREE.Vector3(-closeBaseline, -800, camHeight),
-				new THREE.Vector3(0, -800, camHeight),
-				new THREE.Vector3(closeBaseline, -800, camHeight),
-			];
-			const wideCamPos = [
-				new THREE.Vector3(-wideBaseline, -800, camHeight),
-				new THREE.Vector3(0, -800, camHeight),
-				new THREE.Vector3(wideBaseline, -800, camHeight),
-			];
-			const closeArrows = [];
-			const wideArrows = [];
-			const ringArrows = [];
+			const setup3Arrows = [];
 			const setup4Arrows = [];
 			// Setup 4 (customizable): parameters and positions
 			let setup4 = {
@@ -552,69 +518,78 @@
 			function computeSetup4Positions() {
 				const centerTarget = new THREE.Vector3(0, 0, 300);
 				const dz = setup4.heightZ;
-				const D = setup4.distanceToCenter;
-				const B = setup4.distanceBetween;
-				const ang = (setup4.flareAngleDeg * Math.PI) / 180;
-				// Center cam sits at (0, -D, dz) looking at center
-				const c2 = new THREE.Vector3(0, -D, dz);
-				// Left/right cams shifted by B/2 in X and rotated around Z by +-ang away from center line
-				const baseL = new THREE.Vector3(-B / 2, -D, dz);
-				const baseR = new THREE.Vector3(B / 2, -D, dz);
-				// Apply yaw rotations by rotating their forward vector; for arrows we just point to center
-				return [baseL, c2, baseR].map((p) => ({
+				const D = Math.max(1e-6, setup4.distanceToCenter);
+				// Prefer geometrically consistent placement: all three cameras lie on a circle of radius D
+				// around the grid center. Left/Right are rotated by ±ang from the center camera direction.
+				let ang = (setup4.flareAngleDeg * Math.PI) / 180;
+				// If distanceBetween is set, derive ang to match the chord length B = 2*D*sin(ang)
+				if (setup4.distanceBetween && setup4.distanceBetween > 0) {
+					const s = Math.min(
+						1.0,
+						Math.max(0.0, setup4.distanceBetween / (2 * D))
+					);
+					ang = Math.asin(s);
+				}
+				const a0 = -Math.PI / 2; // center camera sits at (0, -D, dz)
+				const baseC = new THREE.Vector3(D * Math.cos(a0), D * Math.sin(a0), dz);
+				const posL = new THREE.Vector3(
+					D * Math.cos(a0 + ang),
+					D * Math.sin(a0 + ang),
+					dz
+				);
+				const posR = new THREE.Vector3(
+					D * Math.cos(a0 - ang),
+					D * Math.sin(a0 - ang),
+					dz
+				);
+				return [posL, baseC, posR].map((p) => ({
 					pos: p,
 					dir: centerTarget.clone().sub(p).normalize(),
 				}));
 			}
 			let selectedPOV = null;
+			// Setup 3 (customizable around circle)
+			let setup3 = {
+				heightZ: 120,
+				// defaults approximate prior ring layout (R=1200, delta=120deg → arc ≈ 2513)
+				arcDistance: 2513,
+				distanceToCenter: 1200,
+			};
+			function computeSetup3Positions() {
+				const R = Math.max(1e-6, setup3.distanceToCenter);
+				const delta = setup3.arcDistance / R;
+				const z = setup3.heightZ;
+				const centerTarget = new THREE.Vector3(0, 0, 300);
+				const c = new THREE.Vector3(R * Math.cos(0), R * Math.sin(0), z);
+				const l = new THREE.Vector3(
+					R * Math.cos(delta),
+					R * Math.sin(delta),
+					z
+				);
+				const r = new THREE.Vector3(
+					R * Math.cos(-delta),
+					R * Math.sin(-delta),
+					z
+				);
+				return [l, c, r].map((p) => ({
+					pos: p,
+					dir: centerTarget.clone().sub(p).normalize(),
+				}));
+			}
 			function makeArrows() {
-				closeCamPos.forEach((pos, i) => {
-					const dir = center.clone().sub(pos).normalize();
+				// Setup 3 arrows
+				computeSetup3Positions().forEach((entry, i) => {
 					const a = new THREE.ArrowHelper(
-						dir,
-						pos.clone(),
-						80,
-						0xffaa00,
-						15,
-						8
-					);
-					a.userData = { setup: 'close', index: i };
-					scene.add(a);
-					closeArrows.push(a);
-				});
-				wideCamPos.forEach((pos, i) => {
-					const dir = center.clone().sub(pos).normalize();
-					const a = new THREE.ArrowHelper(
-						dir,
-						pos.clone(),
-						60,
-						0x00aaff,
-						12,
-						6
-					);
-					a.userData = { setup: 'wide', index: i };
-					scene.add(a);
-					wideArrows.push(a);
-				});
-				// Setup 3 ring around center (match cam_config setup3 positions)
-				const ringCamPos = [
-					new THREE.Vector3(1200, 0, 120),
-					new THREE.Vector3(-600, 1039.230484, 120),
-					new THREE.Vector3(-600, -1039.230484, 120),
-				];
-				ringCamPos.forEach((pos, i) => {
-					const dir = center.clone().sub(pos).normalize();
-					const a = new THREE.ArrowHelper(
-						dir,
-						pos.clone(),
+						entry.dir,
+						entry.pos.clone(),
 						70,
-						0xcc66ff,
+						0x00aaff,
 						14,
 						7
 					);
-					a.userData = { setup: 'ring', index: i };
+					a.userData = { setup: 'setup3', index: i };
 					scene.add(a);
-					ringArrows.push(a);
+					setup3Arrows.push(a);
 				});
 				// Setup 4 custom arrows
 				computeSetup4Positions().forEach((entry, i) => {
@@ -622,7 +597,7 @@
 						entry.dir,
 						entry.pos.clone(),
 						60,
-						0x66ff66,
+						0xff4444,
 						12,
 						6
 					);
@@ -632,56 +607,35 @@
 				});
 			}
 			makeArrows();
-			function setClosePOV(i) {
-				const p = closeCamPos[i].clone();
-				camera.position.copy(p);
+			function setSetup3POV(i) {
+				const pos =
+					computeSetup3Positions()[i]?.pos ||
+					new THREE.Vector3(1200, 0, setup3.centerHeightZ);
+				camera.position.copy(pos);
 				camera.up.set(0, 0, 1);
 				camera.lookAt(center);
 				controls.target.copy(center);
 				controls.update();
-				selectedPOV = { setup: 'close', index: i };
-			}
-			function setWidePOV(i) {
-				const p = wideCamPos[i].clone();
-				camera.position.copy(p);
-				camera.up.set(0, 0, 1);
-				camera.lookAt(center);
-				controls.target.copy(center);
-				controls.update();
-				selectedPOV = { setup: 'wide', index: i };
+				selectedPOV = { setup: 'setup3', index: i };
 			}
 			function updateArrowVisibility() {
 				if (!selectedPOV) {
-					closeArrows.forEach((a) => (a.visible = true));
-					wideArrows.forEach((a) => (a.visible = true));
-					ringArrows.forEach((a) => (a.visible = true));
+					setup3Arrows.forEach((a) => (a.visible = true));
 					setup4Arrows.forEach((a) => (a.visible = true));
 					return;
 				}
-				closeArrows.forEach((a) => (a.visible = false));
-				wideArrows.forEach((a) => (a.visible = false));
-				ringArrows.forEach((a) => (a.visible = false));
+				setup3Arrows.forEach((a) => (a.visible = false));
 				setup4Arrows.forEach((a) => (a.visible = false));
 				const threshold = 50;
 				let base = null;
-				if (selectedPOV.setup === 'close')
-					base = closeCamPos[selectedPOV.index];
-				if (selectedPOV.setup === 'wide') base = wideCamPos[selectedPOV.index];
-				if (selectedPOV.setup === 'ring') {
-					const ringCamPos = [
-						new THREE.Vector3(1200, 0, 120),
-						new THREE.Vector3(-600, 1039.230484, 120),
-						new THREE.Vector3(-600, -1039.230484, 120),
-					];
-					base = ringCamPos[selectedPOV.index];
+				if (selectedPOV.setup === 'setup3') {
+					base = setup3Arrows[selectedPOV.index]?.position || null;
 				}
 				if (selectedPOV.setup === 'setup4') {
 					base = setup4Arrows[selectedPOV.index]?.position || null;
 				}
 				if (base && camera.position.distanceTo(base) > threshold) {
-					closeArrows.forEach((a) => (a.visible = true));
-					wideArrows.forEach((a) => (a.visible = true));
-					ringArrows.forEach((a) => (a.visible = true));
+					setup3Arrows.forEach((a) => (a.visible = true));
 					setup4Arrows.forEach((a) => (a.visible = true));
 				}
 			}
@@ -758,72 +712,88 @@
 				}
 			});
 
-			// POV buttons
-			document.getElementById('setup1_pov1').onclick = () => {
-				setClosePOV(0);
-				updateArrowVisibility();
-			};
-			document.getElementById('setup1_pov2').onclick = () => {
-				setClosePOV(1);
-				updateArrowVisibility();
-			};
-			document.getElementById('setup1_pov3').onclick = () => {
-				setClosePOV(2);
-				updateArrowVisibility();
-			};
-			document.getElementById('setup2_pov1').onclick = () => {
-				setWidePOV(0);
-				updateArrowVisibility();
-			};
-			document.getElementById('setup2_pov2').onclick = () => {
-				setWidePOV(1);
-				updateArrowVisibility();
-			};
-			document.getElementById('setup2_pov3').onclick = () => {
-				setWidePOV(2);
-				updateArrowVisibility();
-			};
-			// Setup 3: approximate 360° camera ring around center
-			document.getElementById('setup3_pov1').onclick = () => {
-				const p = new THREE.Vector3(1200, 0, 120);
-				camera.position.copy(p);
-				camera.up.set(0, 0, 1);
-				camera.lookAt(0, 0, 300);
-				controls.target.set(0, 0, 300);
-				controls.update();
-				selectedPOV = { setup: 'ring', index: 0 };
-				updateArrowVisibility();
-			};
-			document.getElementById('setup3_pov2').onclick = () => {
-				const p = new THREE.Vector3(-600, 1039.230484, 120);
-				camera.position.copy(p);
-				camera.up.set(0, 0, 1);
-				camera.lookAt(0, 0, 300);
-				controls.target.set(0, 0, 300);
-				controls.update();
-				selectedPOV = { setup: 'ring', index: 1 };
-				updateArrowVisibility();
-			};
-			document.getElementById('setup3_pov3').onclick = () => {
-				const p = new THREE.Vector3(-600, -1039.230484, 120);
-				camera.position.copy(p);
-				camera.up.set(0, 0, 1);
-				camera.lookAt(0, 0, 300);
-				controls.target.set(0, 0, 300);
-				controls.update();
-				selectedPOV = { setup: 'ring', index: 2 };
-				updateArrowVisibility();
-			};
-			// Setup 4 POV buttons (simple bindings)
-			// Add buttons into HUD
-			(function addSetup4Controls() {
+			// POV buttons removed for Setup 1 & 2 (deleted)
+			// Removed static Setup 3 handlers; dynamic controls below
+			// Add customizable Setup 3 + Setup 4 controls into HUD
+			(function addSetupControls() {
 				const hud = document.getElementById('hud');
-				const title = document.createElement('div');
-				title.textContent = 'Setup 4 (customizable)';
-				title.style.margin = '8px 0';
-				title.style.fontSize = '12px';
-				title.style.color = '#888';
-				hud.appendChild(title);
+				const title3 = document.createElement('div');
+				title3.textContent = 'Setup 1 (customizable)';
+				title3.style.margin = '8px 0';
+				title3.style.fontSize = '12px';
+				title3.style.color = '#888';
+				hud.appendChild(title3);
+				const params3 = document.createElement('div');
+				params3.style.display = 'grid';
+				params3.style.gridTemplateColumns = 'auto auto';
+				params3.style.gap = '4px 6px';
+				function addParam3(label, key) {
+					const l = document.createElement('label');
+					l.textContent = label;
+					const inp = document.createElement('input');
+					inp.type = 'number';
+					inp.step = '1';
+					inp.value = setup3[key];
+					inp.onchange = () => {
+						setup3[key] = parseFloat(inp.value);
+						// rebuild arrows
+						setup3Arrows.forEach((a) => a.parent && a.parent.remove(a));
+						setup3Arrows.length = 0;
+						computeSetup3Positions().forEach((entry, i) => {
+							const a = new THREE.ArrowHelper(
+								entry.dir,
+								entry.pos.clone(),
+								70,
+								0x00aaff,
+								14,
+								7
+							);
+							a.userData = { setup: 'setup3', index: i };
+							scene.add(a);
+							setup3Arrows.push(a);
+						});
+						updateArrowVisibility();
+					};
+					params3.appendChild(l);
+					params3.appendChild(inp);
+				}
+				addParam3('Height Z', 'heightZ');
+				addParam3('Arc distance (along circle)', 'arcDistance');
+				addParam3('Distance to center (R)', 'distanceToCenter');
+				hud.appendChild(params3);
+				const row3 = document.createElement('div');
+				row3.style.marginTop = '6px';
+				function addBtn3(name, idx) {
+					const b = document.createElement('button');
+					b.className = 'setup3-btn';
+					b.textContent = name;
+					b.onclick = () => {
+						const p = computeSetup3Positions()[idx]?.pos;
+						if (p) {
+							camera.position.copy(p);
+							camera.up.set(0, 0, 1);
+							camera.lookAt(0, 0, 300);
+							controls.target.set(0, 0, 300);
+							controls.update();
+							selectedPOV = { setup: 'setup3', index: idx };
+							updateArrowVisibility();
+						}
+					};
+					row3.appendChild(b);
+				}
+				addBtn3('POV 1', 0);
+				addBtn3('POV 2', 1);
+				addBtn3('POV 3', 2);
+				hud.appendChild(row3);
+
+				// (per-setup save removed; unified save provided at bottom)
+
+				const title4 = document.createElement('div');
+				title4.textContent = 'Setup 2 (customizable)';
+				title4.style.margin = '8px 0';
+				title4.style.fontSize = '12px';
+				title4.style.color = '#888';
+				hud.appendChild(title4);
 				const params = document.createElement('div');
 				params.style.display = 'grid';
 				params.style.gridTemplateColumns = 'auto auto';
@@ -845,7 +815,7 @@
 								entry.dir,
 								entry.pos.clone(),
 								60,
-								0x66ff66,
+								0xff4444,
 								12,
 								6
 							);
@@ -887,32 +857,70 @@
 				addBtn('POV 2', 1);
 				addBtn('POV 3', 2);
 				hud.appendChild(row);
-				const saveBtn = document.createElement('button');
-				saveBtn.className = 'setup4-btn';
-				saveBtn.textContent = 'Save Setup 4';
-				saveBtn.style.marginTop = '6px';
-				saveBtn.onclick = async () => {
-					// Compute camera entries and POST to a simple endpoint (requires a small server) or show JSON to copy
-					const positions = computeSetup4Positions().map((e) => e.pos);
-					const forwards = computeSetup4Positions().map((e) => e.dir);
-					const cams = positions.map((p, i) => ({
-						name: `setup4_${i + 1}`,
-						position: [p.x, p.y, p.z],
-						forward: [forwards[i].x, forwards[i].y, forwards[i].z],
-						up: [0, 0, 1],
-						fov_deg: 70,
-					}));
-					const blob = new Blob([JSON.stringify({ cameras: cams }, null, 2)], {
-						type: 'application/json',
-					});
-					const url = URL.createObjectURL(blob);
-					const a = document.createElement('a');
-					a.href = url;
-					a.download = 'setup4_cam_config.json';
-					a.click();
-					URL.revokeObjectURL(url);
+				// (per-setup save removed; unified save provided at bottom)
+				// Unified save button (bottom of HUD)
+				const saveAllBtn = document.createElement('button');
+				saveAllBtn.id = 'saveAllSetupsBtn';
+				saveAllBtn.className = 'save-btn';
+				saveAllBtn.textContent = 'Save Camera Configs';
+				saveAllBtn.style.marginTop = '10px';
+				saveAllBtn.onclick = async () => {
+					const s1 = computeSetup3Positions();
+					const s2 = computeSetup4Positions();
+					const cams = [];
+					s1.forEach((e, i) =>
+						cams.push({
+							name: `setup1_${i + 1}`,
+							position: [e.pos.x, e.pos.y, e.pos.z],
+							forward: [e.dir.x, e.dir.y, e.dir.z],
+							up: [0, 0, 1],
+							fov_deg: 70,
+						})
+					);
+					s2.forEach((e, i) =>
+						cams.push({
+							name: `setup2_${i + 1}`,
+							position: [e.pos.x, e.pos.y, e.pos.z],
+							forward: [e.dir.x, e.dir.y, e.dir.z],
+							up: [0, 0, 1],
+							fov_deg: 70,
+						})
+					);
+					// Try posting to local save server first; fall back to download if it fails
+					const payload = { cameras: cams };
+					let posted = false;
+					try {
+						const resp = await fetch('http://127.0.0.1:8787/save_cams', {
+							method: 'POST',
+							headers: { 'Content-Type': 'application/json' },
+							body: JSON.stringify(payload),
+						});
+						if (resp.ok) {
+							flash('#66ff66');
+							posted = true;
+						} else {
+							console.warn('Save server responded with status', resp.status);
+						}
+					} catch (err) {
+						console.warn(
+							'Save server not reachable; falling back to download',
+							err
+						);
+					}
+					if (!posted) {
+						const blob = new Blob([JSON.stringify(payload, null, 2)], {
+							type: 'application/json',
+						});
+						const url = URL.createObjectURL(blob);
+						const a = document.createElement('a');
+						a.href = url;
+						a.download = 'cam_config.json';
+						a.click();
+						URL.revokeObjectURL(url);
+						flash('#ffaa33');
+					}
 				};
-				hud.appendChild(saveBtn);
+				hud.appendChild(saveAllBtn);
 			})();
 			document.getElementById('start').onclick = () => startFlight();
 			document
@@ -936,6 +944,14 @@
 				camera.updateProjectionMatrix();
 				renderer.setSize(innerWidth, innerHeight);
 				layoutPanels();
+			});
+			// Map Cmd+S to unified save
+			addEventListener('keydown', (ev) => {
+				if (ev.metaKey && (ev.key === 's' || ev.key === 'S')) {
+					ev.preventDefault();
+					const btn = document.getElementById('saveAllSetupsBtn');
+					if (btn) btn.click();
+				}
 			});
 			layoutPanels();
 		</script>
