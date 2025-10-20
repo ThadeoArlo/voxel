@@ -346,7 +346,7 @@ def reconstruct_scene(scene: str, mask_root: Path, config_path: Path, out_root: 
         if m:
             setup_num = int(m.group(1))
     select_names = None
-    if setup_num in (1, 2, 3):
+    if setup_num in (1, 2, 3, 4):
         select_names = [f"setup{setup_num}_{i}" for i in (1, 2, 3)]
         print(f"[info] Selecting cameras: {select_names}")
     # Adaptive defaults for setup 2 if user didn't override
