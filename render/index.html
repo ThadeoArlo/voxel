@@ -108,8 +108,8 @@
 	<body>
 		<div id="flash"></div>
 		<div id="hud">
-			Load a track.json:
-			<input id="file" type="file" accept="application/json" />
+			Load track JSONs
+			<input id="file" type="file" accept="application/json" multiple />
 			<div style="margin-top: 8px; font-size: 12px; color: #bbb">Scenario:</div>
 			<select id="scenario">
 				<option value="straight">A - Straight path</option>
@@ -129,6 +129,7 @@
 				<input id="showPaths" type="checkbox" /> Show flight paths
 			</label>
 			<button id="start">Start flight</button>
+			<div id="trackList" style="margin-top: 10px; font-size: 12px"></div>
 			<div id="legend">
 				<div class="legend-row">
 					<span class="swatch" style="background: #ff5555"></span> Simulation
@@ -226,6 +227,7 @@
 
 			// --- Loaded track playback (supports single or multiple tracks) ---
 			let fileTracks = [];
+			let fileMeta = [];
 			let fileActors = [];
 			let filePathLines = [];
 			let fileIdx = 0;
@@ -243,12 +245,10 @@
 				}
 				filePathLines = [];
 			}
-			function ensureFileActors(n) {
-				const palette = [
-					0x55ffcc, 0x33ddaa, 0x88ffee, 0x22aa88, 0xbbffee, 0x99ffdd,
-				];
-				while (fileActors.length < n) {
-					const color = palette[fileActors.length % palette.length];
+			function ensureFileActors() {
+				while (fileActors.length < fileTracks.length) {
+					const idx = fileActors.length;
+					const color = fileMeta[idx]?.color || 0x55ffcc;
 					const m = new THREE.Mesh(
 						new THREE.SphereGeometry(8, 16, 12),
 						new THREE.MeshBasicMaterial({ color })
@@ -256,9 +256,11 @@
 					scene.add(m);
 					fileActors.push(m);
 				}
-				for (let i = n; i < fileActors.length; i++)
-					fileActors[i].visible = false;
-				for (let i = 0; i < n; i++) fileActors[i].visible = true;
+				for (let i = 0; i < fileActors.length; i++) {
+					fileActors[i].visible = Boolean(fileMeta[i]?.visible);
+					if (fileMeta[i]?.color && fileActors[i]?.material)
+						fileActors[i].material.color = new THREE.Color(fileMeta[i].color);
+				}
 			}
 
 			function buildFilePaths() {
@@ -272,19 +274,102 @@
 				for (let i = 0; i < fileTracks.length; i++) {
 					const tr = fileTracks[i];
 					if (!tr || tr.length < 2) continue;
+					if (!fileMeta[i]?.visible) continue;
 					const pts = [];
 					for (const p of tr) {
 						pts.push(new THREE.Vector3(p.x, p.y, p.z));
 					}
 					const geom = new THREE.BufferGeometry().setFromPoints(pts);
-					const mat = new THREE.LineBasicMaterial({
-						color: 0x55ffcc,
-						linewidth: 2,
-					});
+					const color = fileMeta[i]?.color || 0x55ffcc;
+					const mat = new THREE.LineBasicMaterial({ color, linewidth: 2 });
 					const line = new THREE.Line(geom, mat);
 					scene.add(line);
 					filePathLines.push(line);
 				}
+			}
+
+			function rebuildTrackListUI() {
+				const list = document.getElementById('trackList');
+				if (!list) return;
+				list.innerHTML = '';
+				for (let i = 0; i < fileTracks.length; i++) {
+					const row = document.createElement('div');
+					row.style.display = 'flex';
+					row.style.alignItems = 'center';
+					row.style.marginTop = '4px';
+					const sw = document.createElement('span');
+					sw.className = 'swatch';
+					sw.style.background = new THREE.Color(
+						fileMeta[i]?.color || 0x55ffcc
+					).getStyle();
+					row.appendChild(sw);
+					const label = document.createElement('span');
+					label.textContent = fileMeta[i]?.name || `Track ${i + 1}`;
+					label.style.marginRight = '8px';
+					row.appendChild(label);
+					const vis = document.createElement('input');
+					vis.type = 'checkbox';
+					vis.checked = Boolean(fileMeta[i]?.visible);
+					vis.onchange = () => {
+						fileMeta[i].visible = vis.checked;
+						ensureFileActors();
+						buildFilePaths();
+					};
+					row.appendChild(vis);
+					const rm = document.createElement('button');
+					rm.textContent = 'Remove';
+					rm.style.marginLeft = '6px';
+					rm.onclick = () => {
+						if (fileActors[i] && fileActors[i].parent)
+							fileActors[i].parent.remove(fileActors[i]);
+						fileActors.splice(i, 1);
+						if (filePathLines[i] && filePathLines[i].parent)
+							filePathLines[i].parent.remove(filePathLines[i]);
+						filePathLines.splice(i, 1);
+						fileTracks.splice(i, 1);
+						fileMeta.splice(i, 1);
+						fileMaxLen = fileTracks.reduce((m, t) => Math.max(m, t.length), 0);
+						rebuildTrackListUI();
+						ensureFileActors();
+						buildFilePaths();
+					};
+					row.appendChild(rm);
+					list.appendChild(row);
+				}
+			}
+
+			const palette = [
+				0x55ffcc, 0x33ddaa, 0x88ffee, 0x22aa88, 0xbbffee, 0x99ffdd, 0xffdd55,
+				0xffaa88, 0xaaddff,
+			];
+			function nextColor(idx) {
+				return palette[idx % palette.length];
+			}
+			function addTracksFromData(name, data) {
+				let tracks = [];
+				if (Array.isArray(data)) {
+					tracks = [data];
+				} else if (data && Array.isArray(data.tracks)) {
+					tracks = data.tracks.map((t) =>
+						Array.isArray(t) ? t : t.points || []
+					);
+				} else {
+					return false;
+				}
+				for (let k = 0; k < tracks.length; k++) {
+					const idx = fileTracks.length;
+					fileTracks.push(tracks[k]);
+					fileMeta.push({
+						name: tracks.length > 1 ? `${name}[${k}]` : name,
+						color: nextColor(idx),
+						visible: true,
+					});
+				}
+				fileMaxLen = fileTracks.reduce((m, t) => Math.max(m, t.length), 0);
+				ensureFileActors();
+				buildFilePaths();
+				rebuildTrackListUI();
+				return true;
 			}
 
 			// --- Simulation scenarios (procedural flight) ---
@@ -603,47 +688,28 @@
 			animate();
 
 			document.getElementById('file').addEventListener('change', (ev) => {
-				const f = ev.target.files && ev.target.files[0];
-				if (!f) return;
-				const reader = new FileReader();
-				reader.onload = () => {
-					try {
-						const data = JSON.parse(reader.result);
-						// Stop simulation playback and reset state
-						clearSimActors();
-						simPlaying = false;
-						// (no legacy single-dot or idx state)
-						// Normalize input to an array of tracks
-						let tracks = [];
-						if (Array.isArray(data)) {
-							// Single track array
-							tracks = [data];
-						} else if (data && Array.isArray(data.tracks)) {
-							tracks = data.tracks.map((t) =>
-								Array.isArray(t) ? t : t.points || []
-							);
-						} else {
-							alert(
-								'Unsupported track format (expected array or {tracks:[...]})'
-							);
-							return;
+				const files = ev.target.files;
+				if (!files || files.length === 0) return;
+				// Stop simulation playback and reset state
+				clearSimActors();
+				simPlaying = false;
+				for (let i = 0; i < files.length; i++) {
+					const f = files[i];
+					const reader = new FileReader();
+					reader.onload = () => {
+						try {
+							const data = JSON.parse(reader.result);
+							if (!addTracksFromData(f.name.replace(/\.json$/i, ''), data)) {
+								alert('Unsupported track format in ' + f.name);
+							}
+							const includeSimRow = document.getElementById('includeSimRow');
+							if (includeSimRow) includeSimRow.style.display = 'block';
+						} catch (e) {
+							alert('Bad JSON in ' + f.name);
 						}
-						fileTracks = tracks;
-						fileMaxLen = tracks.reduce((m, t) => Math.max(m, t.length), 0);
-						fileIdx = 0;
-						fileAcc = 0;
-						filePlaying = false; // wait for Start button
-						ensureFileActors(fileTracks.length);
-						layoutPanels();
-						buildFilePaths();
-						// Show includeSim option only when a track is loaded
-						const includeSimRow = document.getElementById('includeSimRow');
-						if (includeSimRow) includeSimRow.style.display = 'block';
-					} catch (e) {
-						alert('Bad JSON');
-					}
-				};
-				reader.readAsText(f);
+					};
+					reader.readAsText(f);
+				}
 			});
 
 			// POV buttons
