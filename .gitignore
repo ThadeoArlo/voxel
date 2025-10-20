@@ -16,7 +16,7 @@ Thumbs.db
 node_modules/
 
 # Project large outputs
-# mask/output/**
+mask/output/**
 # render/output/**
 # zMisc/Pixeltovoxelprojector/output/**
 # zMisc/Pixeltovoxelprojector/screenshots/**
