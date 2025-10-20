@@ -15,6 +15,26 @@ body {
 	border-radius: 6px;
 	z-index: 10;
 }
+.hud-header {
+	display: flex;
+	justify-content: space-between;
+	align-items: center;
+	margin-bottom: 6px;
+}
+.hud-title {
+	font-size: 14px;
+	color: #bbb;
+}
+.toggle-btn {
+	margin: 0;
+	padding: 2px 8px;
+}
+.hud-body {
+	display: block;
+}
+#hud.collapsed .hud-body {
+	display: none;
+}
 #hud input[type='file'],
 #hud select,
 #hud button {

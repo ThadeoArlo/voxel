@@ -16,41 +16,63 @@
 	<body>
 		<div id="flash"></div>
 		<div id="hud">
-			Load track JSONs
-			<input id="file" type="file" accept="application/json" multiple />
-			<div style="margin-top: 8px; font-size: 12px; color: #bbb">Scenario:</div>
-			<select id="scenario">
-				<option value="straight">A - Straight path</option>
-				<option value="curved">B - Curved path</option>
-				<option value="curved3">C - 3 objects (curved)</option>
-			</select>
-			<label
-				id="includeSimRow"
-				style="display: none; margin-top: 6px; font-size: 12px; color: #bbb"
-			>
-				<input id="includeSim" type="checkbox" /> Include simulation
-			</label>
-			<label
-				id="pathsRow"
-				style="margin-top: 6px; font-size: 12px; color: #bbb"
-			>
-				<input id="showPaths" type="checkbox" /> Show flight paths
-			</label>
-			<button id="start">Start flight</button>
-			<div id="trackList" style="margin-top: 10px; font-size: 12px"></div>
-			<div id="legend">
-				<div class="legend-row">
-					<span class="swatch" style="background: #ff5555"></span> Simulation
+			<div id="hudHeader" class="hud-header">
+				<span class="hud-title">Settings</span>
+				<button id="toggleHud" class="toggle-btn" title="Hide/Show settings">
+					Hide
+				</button>
+			</div>
+			<div id="hudBody" class="hud-body">
+				Load track JSONs
+				<input id="file" type="file" accept="application/json" multiple />
+				<div style="margin-top: 8px; font-size: 12px; color: #bbb">
+					Scenario:
 				</div>
-				<div class="legend-row">
-					<span class="swatch" style="background: #55ffcc"></span>
-					Reconstruction
+				<select id="scenario">
+					<option value="straight">A - Straight path</option>
+					<option value="curved">B - Curved path</option>
+					<option value="curved3">C - 3 objects (curved)</option>
+				</select>
+				<label
+					id="includeSimRow"
+					style="display: none; margin-top: 6px; font-size: 12px; color: #bbb"
+				>
+					<input id="includeSim" type="checkbox" /> Include simulation
+				</label>
+				<label
+					id="pathsRow"
+					style="margin-top: 6px; font-size: 12px; color: #bbb"
+				>
+					<input id="showPaths" type="checkbox" /> Show flight paths
+				</label>
+				<button id="start">Start flight</button>
+				<div id="trackList" style="margin-top: 10px; font-size: 12px"></div>
+				<div id="legend">
+					<div class="legend-row">
+						<span class="swatch" style="background: #ff5555"></span> Simulation
+					</div>
+					<div class="legend-row">
+						<span class="swatch" style="background: #55ffcc"></span>
+						Reconstruction
+					</div>
 				</div>
 			</div>
 		</div>
 		<script type="module">
 			import * as THREE from 'three';
 			import { OrbitControls } from 'https://unpkg.com/three@0.160.0/examples/jsm/controls/OrbitControls.js';
+
+			// HUD collapse/expand
+			const hudEl = document.getElementById('hud');
+			const toggleBtn = document.getElementById('toggleHud');
+			if (toggleBtn && hudEl) {
+				toggleBtn.onclick = () => {
+					hudEl.classList.toggle('collapsed');
+					toggleBtn.textContent = hudEl.classList.contains('collapsed')
+						? 'Show'
+						: 'Hide';
+				};
+			}
 
 			// Persist UI state across reloads
 			const LS_KEY_SETUP3 = 'vp_setup3';
@@ -776,14 +798,14 @@
 			// Removed static legacy handlers; dynamic controls below
 			// Add customizable Setup 1 + Setup 2 controls into HUD
 			(function addSetupControls() {
-				const hud = document.getElementById('hud');
+				const hudBody = document.getElementById('hudBody');
 				let camConfigHandle = null; // File System Access handle
 				const title3 = document.createElement('div');
 				title3.textContent = 'Setup 1';
 				title3.style.margin = '8px 0';
 				title3.style.fontSize = '12px';
 				title3.style.color = '#888';
-				hud.appendChild(title3);
+				hudBody.appendChild(title3);
 				const params3 = document.createElement('div');
 				const setup3Inputs = {};
 				params3.style.display = 'grid';
@@ -839,7 +861,7 @@
 				addParam3('Height Z (units)', 'heightZ');
 				addParam3('Angle between (deg)', 'angleBetweenDeg');
 				addParam3('Distance to center (units)', 'distanceToCenter');
-				hud.appendChild(params3);
+				hudBody.appendChild(params3);
 				const row3 = document.createElement('div');
 				row3.style.marginTop = '6px';
 				function addBtn3(name, idx) {
@@ -863,7 +885,7 @@
 				addBtn3('POV 1', 0);
 				addBtn3('POV 2', 1);
 				addBtn3('POV 3', 2);
-				hud.appendChild(row3);
+				hudBody.appendChild(row3);
 				// Reset to defaults for Setup 1
 				const reset3 = document.createElement('button');
 				reset3.className = 'setup3-btn';
@@ -892,7 +914,7 @@
 					updateArrowVisibility();
 					persistSetup(LS_KEY_SETUP3, setup3);
 				};
-				hud.appendChild(reset3);
+				hudBody.appendChild(reset3);
 
 				// (per-setup save removed; unified save provided at bottom)
 
@@ -901,7 +923,7 @@
 				title4.style.margin = '8px 0';
 				title4.style.fontSize = '12px';
 				title4.style.color = '#888';
-				hud.appendChild(title4);
+				hudBody.appendChild(title4);
 				const params = document.createElement('div');
 				const setup2Inputs = {};
 				params.style.display = 'grid';
@@ -958,7 +980,7 @@
 				addParam('Distance between (units)', 'distanceBetween');
 				addParam('Flare angle (deg)', 'flareAngleDeg');
 				addParam('Distance to center (units)', 'distanceToCenter');
-				hud.appendChild(params);
+				hudBody.appendChild(params);
 				const row = document.createElement('div');
 				row.style.marginTop = '6px';
 				function addBtn(name, idx) {
@@ -982,7 +1004,7 @@
 				addBtn('POV 1', 0);
 				addBtn('POV 2', 1);
 				addBtn('POV 3', 2);
-				hud.appendChild(row);
+				hudBody.appendChild(row);
 				// Reset to defaults for Setup 2
 				const reset4 = document.createElement('button');
 				reset4.className = 'setup2-btn';
@@ -1011,7 +1033,7 @@
 					updateArrowVisibility();
 					persistSetup(LS_KEY_SETUP4, setup2);
 				};
-				hud.appendChild(reset4);
+				hudBody.appendChild(reset4);
 				// (per-setup save removed; unified save provided at bottom)
 
 				// Unified save button (bottom of HUD)
@@ -1078,7 +1100,7 @@
 						// user canceled or write failed; do nothing
 					}
 				};
-				hud.appendChild(saveAllBtn);
+				hudBody.appendChild(saveAllBtn);
 			})();
 			document.getElementById('start').onclick = () => startFlight();
 			document
