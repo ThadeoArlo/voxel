@@ -52,30 +52,13 @@ Advanced (explicit mask folders or config):
 python3 render/render.py --masks /abs/m1 /abs/m2 /abs/m3 --config render/cam_config.json --out render/output
 ```
 
-Saving camera configs directly from the browser UI (no file download):
+Saving camera configs directly from the browser UI (serverless):
 
-1. Start the local save server in a terminal:
-
-```bash
-python3 render/save_server.py --port 8787
-```
-
-2. Open `render/index.html` in your browser. Click "Save Camera Configs".
-   - If the save server is running, it updates `render/cam_config.json` in-place
-     and flashes green.
-   - If the server isn’t running, it falls back to downloading `cam_config.json`
-     (amber flash).
-
-Serverless alternative (no Python server):
-
-- Click "Choose cam_config.json…" in the HUD and select your existing
-  `render/cam_config.json`.
-- Then "Save Camera Configs" will write directly to that file using the browser
-  File System Access API.
-  - Supported in Chromium-based browsers in secure contexts (localhost or
-    `file://` with user selection).
-  - If not supported or permission denied, it will fall back to the server or
-    download flow above.
+1. Open `render/index.html` in a Chromium-based browser (Chrome, Edge, Arc).
+2. Click "Save Camera Configs". On first save you’ll be prompted to select
+   `cam_config.json`. Subsequent saves write silently to that same file.
+   - Uses the File System Access API. If permission is denied or unsupported,
+     saving will not proceed.
 
 ---
 

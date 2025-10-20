@@ -1,0 +1,106 @@
+html,
+body {
+	height: 100%;
+	margin: 0;
+	background: #0f0f12;
+	color: #eaeaea;
+	font-family: system-ui, -apple-system, sans-serif;
+}
+#hud {
+	position: absolute;
+	top: 10px;
+	left: 10px;
+	background: rgba(0, 0, 0, 0.5);
+	padding: 8px 10px;
+	border-radius: 6px;
+	z-index: 10;
+}
+#hud input[type='file'],
+#hud select,
+#hud button {
+	display: block;
+	margin-top: 6px;
+}
+button {
+	margin-right: 6px;
+	border: 1px solid #444;
+	background: #333;
+	color: #eee;
+	padding: 4px 8px;
+	border-radius: 3px;
+	cursor: pointer;
+}
+button:hover {
+	background: #444;
+}
+.save-btn {
+	border-color: #777;
+	background: #555;
+	color: #eee;
+}
+.setup3-btn {
+	border-color: #00aaff;
+	background: #004466;
+}
+.setup3-btn:hover {
+	background: #006688;
+}
+.setup2-btn {
+	border-color: #ff4444;
+	background: #661a1a;
+}
+.setup2-btn:hover {
+	background: #882222;
+}
+#flash {
+	position: absolute;
+	top: 10px;
+	left: 10px;
+	width: 24px;
+	height: 24px;
+	border-radius: 4px;
+	background: #ffffff;
+	opacity: 0;
+	z-index: 11;
+	box-shadow: 0 0 16px rgba(255, 255, 255, 0.8);
+	transition: opacity 80ms ease;
+}
+#flash.on {
+	opacity: 1;
+}
+#legend {
+	margin-top: 8px;
+	font-size: 12px;
+	color: #bbb;
+}
+.legend-row {
+	display: flex;
+	align-items: center;
+	margin-top: 4px;
+}
+.swatch {
+	width: 12px;
+	height: 12px;
+	border-radius: 50%;
+	margin-right: 6px;
+	display: inline-block;
+}
+
+/* Param rows */
+.params-grid {
+	display: grid;
+	grid-template-columns: auto 80px 1fr;
+	align-items: center;
+	column-gap: 8px;
+}
+.params-grid label {
+	white-space: nowrap;
+}
+.params-grid input[type='number'] {
+	width: 80px;
+}
+
+/* Smaller, crisper axis labels */
+.axis-label {
+	image-rendering: pixelated;
+}

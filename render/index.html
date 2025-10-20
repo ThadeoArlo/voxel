@@ -4,98 +4,7 @@
 		<meta charset="utf-8" />
 		<meta name="viewport" content="width=device-width, initial-scale=1" />
 		<title>Track Viewer</title>
-		<style>
-			html,
-			body {
-				height: 100%;
-				margin: 0;
-				background: #0f0f12;
-				color: #eaeaea;
-				font-family: system-ui, -apple-system, sans-serif;
-			}
-			#hud {
-				position: absolute;
-				top: 10px;
-				left: 10px;
-				background: rgba(0, 0, 0, 0.5);
-				padding: 8px 10px;
-				border-radius: 6px;
-				z-index: 10;
-			}
-			/* removed separate #ui container; controls are combined under #hud */
-			/* Stack controls in HUD to avoid overlap */
-			#hud input[type='file'],
-			#hud select,
-			#hud button {
-				display: block;
-				margin-top: 6px;
-			}
-			button {
-				margin-right: 6px;
-				border: 1px solid #444;
-				background: #333;
-				color: #eee;
-				padding: 4px 8px;
-				border-radius: 3px;
-				cursor: pointer;
-			}
-			button:hover {
-				background: #444;
-			}
-			/* unified save button */
-			.save-btn {
-				border-color: #777;
-				background: #555;
-				color: #eee;
-			}
-			.setup3-btn {
-				border-color: #00aaff;
-				background: #004466;
-			}
-			.setup3-btn:hover {
-				background: #006688;
-			}
-			.setup4-btn {
-				border-color: #ff4444;
-				background: #661a1a;
-			}
-			.setup4-btn:hover {
-				background: #882222;
-			}
-			#flash {
-				position: absolute;
-				top: 10px;
-				left: 10px;
-				width: 24px;
-				height: 24px;
-				border-radius: 4px;
-				background: #ffffff;
-				opacity: 0;
-				z-index: 11;
-				box-shadow: 0 0 16px rgba(255, 255, 255, 0.8);
-				transition: opacity 80ms ease;
-			}
-			#flash.on {
-				opacity: 1;
-			}
-			#legend {
-				margin-top: 8px;
-				font-size: 12px;
-				color: #bbb;
-			}
-			.legend-row {
-				display: flex;
-				align-items: center;
-				margin-top: 4px;
-			}
-			.swatch {
-				width: 12px;
-				height: 12px;
-				border-radius: 50%;
-				margin-right: 6px;
-				display: inline-block;
-			}
-		</style>
+		<link rel="stylesheet" href="style.css" />
 		<script type="importmap">
 			{
 				"imports": {
@@ -143,6 +52,84 @@
 			import * as THREE from 'three';
 			import { OrbitControls } from 'https://unpkg.com/three@0.160.0/examples/jsm/controls/OrbitControls.js';
 
+			// Persist UI state across reloads
+			const LS_KEY_SETUP3 = 'vp_setup3';
+			const LS_KEY_SETUP4 = 'vp_setup2';
+			function persistSetup(key, obj) {
+				try {
+					localStorage.setItem(key, JSON.stringify(obj));
+				} catch (e) {}
+			}
+			function restoreSetup(key) {
+				try {
+					const s = localStorage.getItem(key);
+					return s ? JSON.parse(s) : null;
+				} catch (e) {
+					return null;
+				}
+			}
+			function mergeInto(dst, src) {
+				if (!src || typeof src !== 'object') return;
+				for (const k of Object.keys(src)) {
+					if (k in dst && typeof src[k] === 'number') dst[k] = src[k];
+				}
+			}
+
+			// Slider metadata and clamping for easier input
+			const setup1ParamMeta = {
+				heightZ: { min: 0, max: 2000, step: 1 },
+				angleBetweenDeg: { min: 0, max: 120, step: 1 }, // equal spacing max 120
+				distanceToCenter: { min: 1, max: 5000, step: 1 },
+			};
+			const setup2ParamMeta = {
+				heightZ: { min: 0, max: 2000, step: 1 },
+				distanceBetween: { min: 0, max: 5000, step: 1 },
+				flareAngleDeg: { min: -90, max: 90, step: 1 },
+				distanceToCenter: { min: 1, max: 5000, step: 1 },
+			};
+			function clampValue(meta, v) {
+				if (!meta) return Number(v);
+				const x = Number(v);
+				if (Number.isNaN(x)) return meta.min ?? x;
+				return Math.min(meta.max ?? x, Math.max(meta.min ?? x, x));
+			}
+
+			// Cache File System Access handles across reloads
+			function openDb() {
+				return new Promise((resolve) => {
+					const req = indexedDB.open('vp_db', 1);
+					req.onupgradeneeded = () => {
+						const db = req.result;
+						if (!db.objectStoreNames.contains('handles'))
+							db.createObjectStore('handles');
+					};
+					req.onsuccess = () => resolve(req.result);
+					req.onerror = () => resolve(null);
+				});
+			}
+			async function dbGetHandle(name) {
+				const db = await openDb();
+				if (!db) return null;
+				return new Promise((resolve) => {
+					const tx = db.transaction('handles');
+					const os = tx.objectStore('handles');
+					const rq = os.get(name);
+					rq.onsuccess = () => resolve(rq.result || null);
+					rq.onerror = () => resolve(null);
+				});
+			}
+			async function dbSetHandle(name, handle) {
+				const db = await openDb();
+				if (!db) return;
+				return new Promise((resolve) => {
+					const tx = db.transaction('handles', 'readwrite');
+					const os = tx.objectStore('handles');
+					os.put(handle, name);
+					tx.oncomplete = () => resolve();
+					tx.onerror = () => resolve();
+				});
+			}
+
 			THREE.Object3D.DEFAULT_UP.set(0, 0, 1);
 			const scene = new THREE.Scene();
 			scene.background = new THREE.Color(0x0f0f12);
@@ -170,36 +157,54 @@
 				})
 			);
 			scene.add(plane);
-			scene.add(
-				new THREE.ArrowHelper(
-					new THREE.Vector3(1, 0, 0),
+			function addAxis(dir, color, label) {
+				const a = new THREE.ArrowHelper(
+					dir,
 					new THREE.Vector3(0, 0, 0),
 					300,
-					0xff5555,
+					color,
 					60,
 					30
-				)
-			);
-			scene.add(
-				new THREE.ArrowHelper(
-					new THREE.Vector3(0, 1, 0),
-					new THREE.Vector3(0, 0, 0),
-					300,
-					0x55ff55,
-					60,
-					30
-				)
-			);
-			scene.add(
-				new THREE.ArrowHelper(
-					new THREE.Vector3(0, 0, 1),
-					new THREE.Vector3(0, 0, 0),
-					300,
-					0x5599ff,
-					60,
-					30
-				)
-			);
+				);
+				scene.add(a);
+				const sprite = makeTextSprite(label, color);
+				sprite.position.copy(dir.clone().multiplyScalar(320));
+				scene.add(sprite);
+			}
+			function makeTextSprite(text, color, worldHeight = 14) {
+				const dpr = Math.max(1, window.devicePixelRatio || 1);
+				const padX = 4,
+					padY = 3;
+				const cvs = document.createElement('canvas');
+				const ctx = cvs.getContext('2d');
+				ctx.font = '12px system-ui';
+				const textW = ctx.measureText(text).width;
+				const w = Math.ceil(textW + padX * 2);
+				const h = 16 + padY * 2;
+				cvs.width = w * dpr;
+				cvs.height = h * dpr;
+				ctx.scale(dpr, dpr);
+				ctx.font = '12px system-ui';
+				ctx.fillStyle = 'rgba(0,0,0,0.5)';
+				ctx.fillRect(0, 0, w, h);
+				ctx.fillStyle = new THREE.Color(color).getStyle();
+				ctx.textBaseline = 'middle';
+				ctx.fillText(text, padX, h * 0.5);
+				const tex = new THREE.CanvasTexture(cvs);
+				tex.minFilter = THREE.LinearFilter;
+				tex.magFilter = THREE.LinearFilter;
+				tex.generateMipmaps = false;
+				const mat = new THREE.SpriteMaterial({ map: tex, transparent: true });
+				const spr = new THREE.Sprite(mat);
+				const aspect = w / h;
+				const heightWorld = worldHeight;
+				const widthWorld = heightWorld * aspect;
+				spr.scale.set(widthWorld, heightWorld, 1);
+				return spr;
+			}
+			addAxis(new THREE.Vector3(1, 0, 0), 0xff5555, 'X');
+			addAxis(new THREE.Vector3(0, 1, 0), 0x55ff55, 'Y');
+			addAxis(new THREE.Vector3(0, 0, 1), 0x5599ff, 'Z');
 
 			camera.position.set(0, -900, 200);
 			camera.lookAt(0, 0, 300);
@@ -377,6 +382,42 @@
 				scene.add(m);
 				return m;
 			}
+
+			// Rebuild both setups' arrows from current params
+			function rebuildArrows() {
+				setup3Arrows.forEach((a) => a.parent && a.parent.remove(a));
+				setup3Arrows.length = 0;
+				computeSetup3Positions().forEach((entry, i) => {
+					const a = new THREE.ArrowHelper(
+						entry.dir,
+						entry.pos.clone(),
+						70,
+						0x00aaff,
+						14,
+						7
+					);
+					a.userData = { setup: 'setup3', index: i };
+					scene.add(a);
+					setup3Arrows.push(a);
+				});
+				setup2Arrows.forEach((a) => a.parent && a.parent.remove(a));
+				setup2Arrows.length = 0;
+				computeSetup2Positions().forEach((entry, i) => {
+					const a = new THREE.ArrowHelper(
+						entry.dir,
+						entry.pos.clone(),
+						60,
+						0xff4444,
+						12,
+						6
+					);
+					a.userData = { setup: 'setup2', index: i };
+					scene.add(a);
+					setup2Arrows.push(a);
+				});
+				selectedPOV = null;
+				updateArrowVisibility();
+			}
 			function buildScenario(name) {
 				clearSimActors();
 				simDurationSec = 8.0;
@@ -507,63 +548,82 @@
 			// Removed Setup 1 and 2
 			const center = new THREE.Vector3(0, 0, 300);
 			const setup3Arrows = [];
-			const setup4Arrows = [];
+			const setup2Arrows = [];
 			// Setup 4 (customizable): parameters and positions
-			let setup4 = {
+			const defaultSetup2 = {
+				heightZ: 120,
+				distanceBetween: 600,
+				flareAngleDeg: 30,
+				distanceToCenter: 800,
+			};
+			let setup2 = {
 				heightZ: 120,
 				distanceBetween: 600,
 				flareAngleDeg: 30, // angle of left/right outward from center direction
 				distanceToCenter: 800,
 			};
-			function computeSetup4Positions() {
+			mergeInto(setup2, restoreSetup(LS_KEY_SETUP4));
+			function computeSetup2Positions() {
+				// Linear side-by-side around the mid arrow (not arc about grid center)
 				const centerTarget = new THREE.Vector3(0, 0, 300);
-				const dz = setup4.heightZ;
-				const D = Math.max(1e-6, setup4.distanceToCenter);
-				// Prefer geometrically consistent placement: all three cameras lie on a circle of radius D
-				// around the grid center. Left/Right are rotated by ±ang from the center camera direction.
-				let ang = (setup4.flareAngleDeg * Math.PI) / 180;
-				// If distanceBetween is set, derive ang to match the chord length B = 2*D*sin(ang)
-				if (setup4.distanceBetween && setup4.distanceBetween > 0) {
-					const s = Math.min(
-						1.0,
-						Math.max(0.0, setup4.distanceBetween / (2 * D))
-					);
-					ang = Math.asin(s);
-				}
-				const a0 = -Math.PI / 2; // center camera sits at (0, -D, dz)
+				const dz = setup2.heightZ;
+				const D = Math.max(1e-6, setup2.distanceToCenter);
+				const a0 = -Math.PI / 2; // center camera base position near (0, -D, dz)
 				const baseC = new THREE.Vector3(D * Math.cos(a0), D * Math.sin(a0), dz);
-				const posL = new THREE.Vector3(
-					D * Math.cos(a0 + ang),
-					D * Math.sin(a0 + ang),
-					dz
-				);
-				const posR = new THREE.Vector3(
-					D * Math.cos(a0 - ang),
-					D * Math.sin(a0 - ang),
-					dz
-				);
-				return [posL, baseC, posR].map((p) => ({
-					pos: p,
-					dir: centerTarget.clone().sub(p).normalize(),
-				}));
+				const dirC = centerTarget.clone().sub(baseC).normalize();
+				let lat = new THREE.Vector3(-dirC.y, dirC.x, 0);
+				if (lat.length() < 1e-9) lat = new THREE.Vector3(1, 0, 0);
+				lat.normalize();
+				const halfB = Math.max(0, Number(setup2.distanceBetween) || 0) * 0.5;
+				const posL = baseC.clone().add(lat.clone().multiplyScalar(halfB));
+				const posR = baseC.clone().add(lat.clone().multiplyScalar(-halfB));
+				const flare = ((Number(setup2.flareAngleDeg) || 0) * Math.PI) / 180;
+				function rotateZ(v, ang) {
+					const x = v.x,
+						y = v.y;
+					const ca = Math.cos(ang),
+						sa = Math.sin(ang);
+					return new THREE.Vector3(
+						x * ca - y * sa,
+						x * sa + y * ca,
+						v.z
+					).normalize();
+				}
+				// Base orientations derived from mid direction only (decoupled from distance sliders)
+				const dirL = rotateZ(dirC, +flare);
+				const dirR = rotateZ(dirC, -flare);
+				return [
+					{ pos: posL, dir: dirL },
+					{ pos: baseC, dir: dirC },
+					{ pos: posR, dir: dirR },
+				];
 			}
 			let selectedPOV = null;
-			// Setup 3 (customizable around circle)
-			let setup3 = {
+			// Setup 1 (customizable around circle)
+			const defaultSetup3 = {
 				heightZ: 120,
-				// defaults approximate prior ring layout (R=1200, delta=120deg → arc ≈ 2513)
-				arcDistance: 2513,
+				angleBetweenDeg: 120,
 				distanceToCenter: 1200,
 			};
+			let setup3 = {
+				heightZ: 120,
+				angleBetweenDeg: 120,
+				distanceToCenter: 1200,
+			};
+			mergeInto(setup3, restoreSetup(LS_KEY_SETUP3));
 			function computeSetup3Positions() {
 				const R = Math.max(1e-6, setup3.distanceToCenter);
-				const delta = setup3.arcDistance / R;
+				const delta =
+					(clampValue(setup1ParamMeta.angleBetweenDeg, setup3.angleBetweenDeg) *
+						Math.PI) /
+					180;
 				const z = setup3.heightZ;
 				const centerTarget = new THREE.Vector3(0, 0, 300);
+				// Default orientation: center arrow along +Y (green axis)
 				const c = new THREE.Vector3(R * Math.cos(0), R * Math.sin(0), z);
 				const l = new THREE.Vector3(
-					R * Math.cos(delta),
-					R * Math.sin(delta),
+					R * Math.cos(+delta),
+					R * Math.sin(+delta),
 					z
 				);
 				const r = new THREE.Vector3(
@@ -577,7 +637,7 @@
 				}));
 			}
 			function makeArrows() {
-				// Setup 3 arrows
+				// Setup 1 arrows
 				computeSetup3Positions().forEach((entry, i) => {
 					const a = new THREE.ArrowHelper(
 						entry.dir,
@@ -591,8 +651,8 @@
 					scene.add(a);
 					setup3Arrows.push(a);
 				});
-				// Setup 4 custom arrows
-				computeSetup4Positions().forEach((entry, i) => {
+				// Setup 2 custom arrows
+				computeSetup2Positions().forEach((entry, i) => {
 					const a = new THREE.ArrowHelper(
 						entry.dir,
 						entry.pos.clone(),
@@ -601,9 +661,9 @@
 						12,
 						6
 					);
-					a.userData = { setup: 'setup4', index: i };
+					a.userData = { setup: 'setup2', index: i };
 					scene.add(a);
-					setup4Arrows.push(a);
+					setup2Arrows.push(a);
 				});
 			}
 			makeArrows();
@@ -621,22 +681,22 @@
 			function updateArrowVisibility() {
 				if (!selectedPOV) {
 					setup3Arrows.forEach((a) => (a.visible = true));
-					setup4Arrows.forEach((a) => (a.visible = true));
+					setup2Arrows.forEach((a) => (a.visible = true));
 					return;
 				}
 				setup3Arrows.forEach((a) => (a.visible = false));
-				setup4Arrows.forEach((a) => (a.visible = false));
+				setup2Arrows.forEach((a) => (a.visible = false));
 				const threshold = 50;
 				let base = null;
 				if (selectedPOV.setup === 'setup3') {
 					base = setup3Arrows[selectedPOV.index]?.position || null;
 				}
-				if (selectedPOV.setup === 'setup4') {
-					base = setup4Arrows[selectedPOV.index]?.position || null;
+				if (selectedPOV.setup === 'setup2') {
+					base = setup2Arrows[selectedPOV.index]?.position || null;
 				}
 				if (base && camera.position.distanceTo(base) > threshold) {
 					setup3Arrows.forEach((a) => (a.visible = true));
-					setup4Arrows.forEach((a) => (a.visible = true));
+					setup2Arrows.forEach((a) => (a.visible = true));
 				}
 			}
 
@@ -713,29 +773,44 @@
 			});
 
 			// POV buttons removed for Setup 1 & 2 (deleted)
-			// Removed static Setup 3 handlers; dynamic controls below
-			// Add customizable Setup 3 + Setup 4 controls into HUD
+			// Removed static legacy handlers; dynamic controls below
+			// Add customizable Setup 1 + Setup 2 controls into HUD
 			(function addSetupControls() {
 				const hud = document.getElementById('hud');
+				let camConfigHandle = null; // File System Access handle
 				const title3 = document.createElement('div');
-				title3.textContent = 'Setup 1 (customizable)';
+				title3.textContent = 'Setup 1';
 				title3.style.margin = '8px 0';
 				title3.style.fontSize = '12px';
 				title3.style.color = '#888';
 				hud.appendChild(title3);
 				const params3 = document.createElement('div');
+				const setup3Inputs = {};
 				params3.style.display = 'grid';
-				params3.style.gridTemplateColumns = 'auto auto';
-				params3.style.gap = '4px 6px';
+				params3.style.gridTemplateColumns = 'auto 80px 1fr';
+				params3.style.alignItems = 'center';
+				params3.style.columnGap = '8px';
 				function addParam3(label, key) {
 					const l = document.createElement('label');
 					l.textContent = label;
 					const inp = document.createElement('input');
 					inp.type = 'number';
-					inp.step = '1';
-					inp.value = setup3[key];
-					inp.onchange = () => {
-						setup3[key] = parseFloat(inp.value);
+					inp.step = String((setup1ParamMeta[key] || {}).step ?? 1);
+					inp.value = String(clampValue(setup1ParamMeta[key], setup3[key]));
+					const slider = document.createElement('input');
+					slider.type = 'range';
+					if (setup1ParamMeta[key]) {
+						slider.min = String(setup1ParamMeta[key].min);
+						slider.max = String(setup1ParamMeta[key].max);
+						slider.step = String(setup1ParamMeta[key].step);
+					}
+					slider.value = String(inp.value);
+					setup3Inputs[key] = inp;
+					function onChange(val) {
+						const v = clampValue(setup1ParamMeta[key], val);
+						inp.value = String(v);
+						slider.value = String(v);
+						setup3[key] = Number(v);
 						// rebuild arrows
 						setup3Arrows.forEach((a) => a.parent && a.parent.remove(a));
 						setup3Arrows.length = 0;
@@ -752,14 +827,18 @@
 							scene.add(a);
 							setup3Arrows.push(a);
 						});
-						updateArrowVisibility();
-					};
+						rebuildArrows();
+						persistSetup(LS_KEY_SETUP3, setup3);
+					}
+					inp.onchange = () => onChange(inp.value);
+					slider.oninput = () => onChange(slider.value);
 					params3.appendChild(l);
 					params3.appendChild(inp);
+					params3.appendChild(slider);
 				}
-				addParam3('Height Z', 'heightZ');
-				addParam3('Arc distance (along circle)', 'arcDistance');
-				addParam3('Distance to center (R)', 'distanceToCenter');
+				addParam3('Height Z (units)', 'heightZ');
+				addParam3('Angle between (deg)', 'angleBetweenDeg');
+				addParam3('Distance to center (units)', 'distanceToCenter');
 				hud.appendChild(params3);
 				const row3 = document.createElement('div');
 				row3.style.marginTop = '6px';
@@ -785,32 +864,75 @@
 				addBtn3('POV 2', 1);
 				addBtn3('POV 3', 2);
 				hud.appendChild(row3);
+				// Reset to defaults for Setup 1
+				const reset3 = document.createElement('button');
+				reset3.className = 'setup3-btn';
+				reset3.textContent = 'Reset to defaults';
+				reset3.style.marginTop = '6px';
+				reset3.onclick = () => {
+					for (const k of Object.keys(defaultSetup3)) {
+						setup3[k] = defaultSetup3[k];
+						if (setup3Inputs[k]) setup3Inputs[k].value = defaultSetup3[k];
+					}
+					setup3Arrows.forEach((a) => a.parent && a.parent.remove(a));
+					setup3Arrows.length = 0;
+					computeSetup3Positions().forEach((entry, i) => {
+						const a = new THREE.ArrowHelper(
+							entry.dir,
+							entry.pos.clone(),
+							70,
+							0x00aaff,
+							14,
+							7
+						);
+						a.userData = { setup: 'setup3', index: i };
+						scene.add(a);
+						setup3Arrows.push(a);
+					});
+					updateArrowVisibility();
+					persistSetup(LS_KEY_SETUP3, setup3);
+				};
+				hud.appendChild(reset3);
 
 				// (per-setup save removed; unified save provided at bottom)
 
 				const title4 = document.createElement('div');
-				title4.textContent = 'Setup 2 (customizable)';
+				title4.textContent = 'Setup 2';
 				title4.style.margin = '8px 0';
 				title4.style.fontSize = '12px';
 				title4.style.color = '#888';
 				hud.appendChild(title4);
 				const params = document.createElement('div');
+				const setup2Inputs = {};
 				params.style.display = 'grid';
-				params.style.gridTemplateColumns = 'auto auto';
-				params.style.gap = '4px 6px';
+				params.style.gridTemplateColumns = 'auto 80px 1fr';
+				params.style.alignItems = 'center';
+				params.style.columnGap = '8px';
 				function addParam(label, key) {
 					const l = document.createElement('label');
 					l.textContent = label;
 					const inp = document.createElement('input');
 					inp.type = 'number';
-					inp.step = '1';
-					inp.value = setup4[key];
-					inp.onchange = () => {
-						setup4[key] = parseFloat(inp.value);
+					inp.step = String((setup2ParamMeta[key] || {}).step ?? 1);
+					inp.value = String(clampValue(setup2ParamMeta[key], setup2[key]));
+					const slider = document.createElement('input');
+					slider.type = 'range';
+					if (setup2ParamMeta[key]) {
+						slider.min = String(setup2ParamMeta[key].min);
+						slider.max = String(setup2ParamMeta[key].max);
+						slider.step = String(setup2ParamMeta[key].step);
+					}
+					slider.value = String(inp.value);
+					setup2Inputs[key] = inp;
+					function onChange(val) {
+						const v = clampValue(setup2ParamMeta[key], val);
+						inp.value = String(v);
+						slider.value = String(v);
+						setup2[key] = Number(v);
 						// Rebuild arrows
-						setup4Arrows.forEach((a) => a.parent && a.parent.remove(a));
-						setup4Arrows.length = 0;
-						computeSetup4Positions().forEach((entry, i) => {
+						setup2Arrows.forEach((a) => a.parent && a.parent.remove(a));
+						setup2Arrows.length = 0;
+						computeSetup2Positions().forEach((entry, i) => {
 							const a = new THREE.ArrowHelper(
 								entry.dir,
 								entry.pos.clone(),
@@ -819,36 +941,40 @@
 								12,
 								6
 							);
-							a.userData = { setup: 'setup4', index: i };
+							a.userData = { setup: 'setup2', index: i };
 							scene.add(a);
-							setup4Arrows.push(a);
+							setup2Arrows.push(a);
 						});
-						updateArrowVisibility();
-					};
+						rebuildArrows();
+						persistSetup(LS_KEY_SETUP4, setup2);
+					}
+					inp.onchange = () => onChange(inp.value);
+					slider.oninput = () => onChange(slider.value);
 					params.appendChild(l);
 					params.appendChild(inp);
+					params.appendChild(slider);
 				}
-				addParam('Height Z', 'heightZ');
-				addParam('Distance between (B)', 'distanceBetween');
+				addParam('Height Z (units)', 'heightZ');
+				addParam('Distance between (units)', 'distanceBetween');
 				addParam('Flare angle (deg)', 'flareAngleDeg');
-				addParam('Distance to center (D)', 'distanceToCenter');
+				addParam('Distance to center (units)', 'distanceToCenter');
 				hud.appendChild(params);
 				const row = document.createElement('div');
 				row.style.marginTop = '6px';
 				function addBtn(name, idx) {
 					const b = document.createElement('button');
-					b.className = 'setup4-btn';
+					b.className = 'setup2-btn';
 					b.textContent = name;
 					b.onclick = () => {
 						const p =
-							setup4Arrows[idx]?.position ||
-							new THREE.Vector3(0, -setup4.distanceToCenter, setup4.heightZ);
+							setup2Arrows[idx]?.position ||
+							new THREE.Vector3(0, -setup2.distanceToCenter, setup2.heightZ);
 						camera.position.copy(p);
 						camera.up.set(0, 0, 1);
 						camera.lookAt(0, 0, 300);
 						controls.target.set(0, 0, 300);
 						controls.update();
-						selectedPOV = { setup: 'setup4', index: idx };
+						selectedPOV = { setup: 'setup2', index: idx };
 						updateArrowVisibility();
 					};
 					row.appendChild(b);
@@ -857,7 +983,37 @@
 				addBtn('POV 2', 1);
 				addBtn('POV 3', 2);
 				hud.appendChild(row);
+				// Reset to defaults for Setup 2
+				const reset4 = document.createElement('button');
+				reset4.className = 'setup2-btn';
+				reset4.textContent = 'Reset to defaults';
+				reset4.style.marginTop = '6px';
+				reset4.onclick = () => {
+					for (const k of Object.keys(defaultSetup2)) {
+						setup2[k] = defaultSetup2[k];
+						if (setup2Inputs[k]) setup2Inputs[k].value = defaultSetup2[k];
+					}
+					setup2Arrows.forEach((a) => a.parent && a.parent.remove(a));
+					setup2Arrows.length = 0;
+					computeSetup2Positions().forEach((entry, i) => {
+						const a = new THREE.ArrowHelper(
+							entry.dir,
+							entry.pos.clone(),
+							60,
+							0xff4444,
+							12,
+							6
+						);
+						a.userData = { setup: 'setup2', index: i };
+						scene.add(a);
+						setup2Arrows.push(a);
+					});
+					updateArrowVisibility();
+					persistSetup(LS_KEY_SETUP4, setup2);
+				};
+				hud.appendChild(reset4);
 				// (per-setup save removed; unified save provided at bottom)
+
 				// Unified save button (bottom of HUD)
 				const saveAllBtn = document.createElement('button');
 				saveAllBtn.id = 'saveAllSetupsBtn';
@@ -866,7 +1022,7 @@
 				saveAllBtn.style.marginTop = '10px';
 				saveAllBtn.onclick = async () => {
 					const s1 = computeSetup3Positions();
-					const s2 = computeSetup4Positions();
+					const s2 = computeSetup2Positions();
 					const cams = [];
 					s1.forEach((e, i) =>
 						cams.push({
@@ -886,38 +1042,40 @@
 							fov_deg: 70,
 						})
 					);
-					// Try posting to local save server first; fall back to download if it fails
-					const payload = { cameras: cams };
-					let posted = false;
+					// Serverless immediate: on first save prompt picker, then write silently
+					if (!window.showOpenFilePicker) return;
 					try {
-						const resp = await fetch('http://127.0.0.1:8787/save_cams', {
-							method: 'POST',
-							headers: { 'Content-Type': 'application/json' },
-							body: JSON.stringify(payload),
-						});
-						if (resp.ok) {
-							flash('#66ff66');
-							posted = true;
-						} else {
-							console.warn('Save server responded with status', resp.status);
+						if (!camConfigHandle) {
+							const [handle] = await window.showOpenFilePicker({
+								multiple: false,
+								types: [
+									{
+										description: 'JSON',
+										accept: { 'application/json': ['.json'] },
+									},
+								],
+								excludeAcceptAllOption: false,
+								id: 'cam_config_picker',
+							});
+							camConfigHandle = handle;
 						}
-					} catch (err) {
-						console.warn(
-							'Save server not reachable; falling back to download',
-							err
+						const payload = { cameras: cams };
+						if (
+							(await camConfigHandle.queryPermission({ mode: 'readwrite' })) !==
+							'granted'
+						) {
+							await camConfigHandle.requestPermission({ mode: 'readwrite' });
+						}
+						const writable = await camConfigHandle.createWritable();
+						await writable.write(
+							new Blob([JSON.stringify(payload, null, 2)], {
+								type: 'application/json',
+							})
 						);
-					}
-					if (!posted) {
-						const blob = new Blob([JSON.stringify(payload, null, 2)], {
-							type: 'application/json',
-						});
-						const url = URL.createObjectURL(blob);
-						const a = document.createElement('a');
-						a.href = url;
-						a.download = 'cam_config.json';
-						a.click();
-						URL.revokeObjectURL(url);
-						flash('#ffaa33');
+						await writable.close();
+						flash('#66ff66');
+					} catch (e) {
+						// user canceled or write failed; do nothing
 					}
 				};
 				hud.appendChild(saveAllBtn);
