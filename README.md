@@ -95,7 +95,7 @@ Notes:
 
 CONFIG NOTES
 
-- cam_config.json
+- cam_config.json (old)
   - Setup1: 200,30,800
     - when zoomed better result and got complete path, from far away resulting
       path truncated / shorter than actual simulation path length.

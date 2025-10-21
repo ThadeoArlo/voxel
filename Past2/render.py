@@ -6,7 +6,6 @@ DEFAULT_MIN_AREA = 50
 DEFAULT_CLOSE_KERNEL = 5
 DEFAULT_REPROJ_THRESH = 4.0
 DEFAULT_PAIRWISE_REPROJ_THRESH = None  # None means use DEFAULT_REPROJ_THRESH
-DEFAULT_MIN_BASELINE_DEG = 1.5  # reject frames with too little parallax
 DEFAULT_LOG_STATS = True
 DEFAULT_VERBOSE = True
 
@@ -210,20 +209,6 @@ def reconstruct_from_masks(mask_folders, config_path, out_path: Path, select_nam
             px, py = centroids[k]
             d = pixel_ray(cams[k], width, height, px, py)
             rays.append(d)
-        # Baseline gating: ensure sufficient pairwise ray angles (parallax)
-        def _angle_deg(u, v):
-            dn = max(1e-9, np.linalg.norm(u) * np.linalg.norm(v))
-            cc = np.clip(float(np.dot(u, v)) / dn, -1.0, 1.0)
-            return float(np.degrees(np.arccos(cc)))
-        a01 = _angle_deg(rays[0], rays[1])
-        a02 = _angle_deg(rays[0], rays[2])
-        a12 = _angle_deg(rays[1], rays[2])
-        min_base_req = float(DEFAULT_MIN_BASELINE_DEG)
-        if (a01 < min_base_req) or (a02 < min_base_req) or (a12 < min_base_req):
-            n_rejected += 1
-            if verbose and (i % max(1, n_frames // 10) == 0):
-                print(f"[debug] frame {i}: baseline too small (deg) a01={a01:.2f}, a02={a02:.2f}, a12={a12:.2f}")
-            continue
         # log baseline angles if requested
         if log_stats:
             def ang(u, v):
@@ -361,16 +346,16 @@ def reconstruct_scene(scene: str, mask_root: Path, config_path: Path, out_root: 
         if m:
             setup_num = int(m.group(1))
     select_names = None
-    if setup_num in (1, 2, 3, 4):
+    if setup_num in (1, 2, 3):
         select_names = [f"setup{setup_num}_{i}" for i in (1, 2, 3)]
         print(f"[info] Selecting cameras: {select_names}")
-    # Adaptive defaults for setup 2 if user didn't override (stricter + more robust)
+    # Adaptive defaults for setup 2 if user didn't override
     if setup_num == 2 and (min_area == DEFAULT_MIN_AREA and close_kernel == DEFAULT_CLOSE_KERNEL and abs(reproj_thresh_px - DEFAULT_REPROJ_THRESH) < 1e-6):
-        print("[info] Setup 2 detected; using adaptive defaults: --min-area 140 --close-kernel 7 --reproj-thresh 6.0 --pairwise-reproj-thresh 5.0")
-        min_area = 140
+        print("[info] Setup 2 detected; using adaptive defaults: --min-area 120 --close-kernel 7 --reproj-thresh 10.0 --pairwise-reproj-thresh 8.0")
+        min_area = 120
         close_kernel = 7
-        reproj_thresh_px = 6.0
-        pairwise_reproj_thresh_px = 5.0
+        reproj_thresh_px = 10.0
+        pairwise_reproj_thresh_px = 8.0
     out_path = out_root / f"{scene}.json"
     return reconstruct_from_masks(mask_folders, config_path, out_path, select_names=select_names,
                                   min_area=min_area, close_kernel=close_kernel,
