@@ -96,8 +96,31 @@ Notes:
 CONFIG NOTES
 
 - cam_config.json
-  - Setup 1 when zoomed better result and got complete path, from far away
-    resulting path truncated.
-  - Setup 2 POVs narrow, json empty, even after zoom i get result but very bad.
-- cam_config_1.json
-  - asdf
+  - Setup1: 200,30,800
+    - when zoomed better result and got complete path, from far away resulting
+      path truncated / shorter than actual simulation path length.
+  - Setup2: 120,100,0,800
+    - POVs narrow, json empty, even after zoom i get result but very bad.
+- cam_config_1.json:
+  - Setup1: 0,30,800
+    - reconstructed path still shorter than actual sim
+  - Setup2: 120,100,-10,800
+    - testing -/+ flare
+    - rendering spawned very far from sim location
+- cam_config_2.json
+  - Setup1: 0,30,720
+    - reconstructed path still shorter than actual sim
+  - Setup2: 100, 1, -15, 480
+    - rendering spawned very far from sim location
+- cam_config_3.json
+  - Setup1: 0,30,720
+    - reconstructed path still shorter than actual sim though a bit
+      fuller/longer
+  - Setup2: 100, 1, -15, 480
+    - rendering spawned very far from sim location
+- cam_config_4.json
+  - Setup1: 700,30,560
+    - Results very bad, short path, skewed, offset, etc.
+  - Setup2: 100, 400, 0, 460
+    - track now resides in the grid instead of very far away in the void, but
+      still the reconstruction is offset and contain more irrelevant tracks.

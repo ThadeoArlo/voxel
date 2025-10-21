@@ -46,6 +46,21 @@
 					<input id="showPaths" type="checkbox" /> Show flight paths
 				</label>
 				<button id="start">Start flight</button>
+				<div
+					id="simControls"
+					style="display: flex; align-items: center; gap: 8px; margin-top: 6px"
+				>
+					<label style="font-size: 12px; color: #bbb">Flight progress</label>
+					<input
+						id="simProgress"
+						type="range"
+						min="0"
+						max="100"
+						step="0.1"
+						style="display: none"
+					/>
+					<button id="stop">Pause</button>
+				</div>
 				<div id="trackList" style="margin-top: 10px; font-size: 12px"></div>
 				<div id="legend">
 					<div class="legend-row">
@@ -111,9 +126,20 @@
 			};
 			function clampValue(meta, v) {
 				if (!meta) return Number(v);
-				const x = Number(v);
-				if (Number.isNaN(x)) return meta.min ?? x;
-				return Math.min(meta.max ?? x, Math.max(meta.min ?? x, x));
+				let x = Number(v);
+				if (Number.isNaN(x)) x = meta.min ?? 0;
+				const min = meta.min ?? -Infinity;
+				const max = meta.max ?? Infinity;
+				x = Math.min(max, Math.max(min, x));
+				if (meta.step != null) {
+					const step = Number(meta.step) || 1;
+					const base = Number.isFinite(min) ? min : 0;
+					x = base + Math.round((x - base) / step) * step;
+					x = Math.min(max, Math.max(min, x));
+					const decimals = (String(step).split('.')[1] || '').length;
+					x = decimals > 0 ? Number(x.toFixed(decimals)) : Math.round(x);
+				}
+				return x;
 			}
 
 			// Cache File System Access handles across reloads
@@ -549,6 +575,8 @@
 					buildScenario(name);
 					simStart = performance.now();
 					simPlaying = true;
+					const stopBtn = document.getElementById('stop');
+					if (stopBtn) stopBtn.textContent = 'Pause';
 					flash('#ffffff');
 					buildSimPaths();
 				} else {
@@ -750,15 +778,30 @@
 					}
 				}
 				// Simulation playback
-				if (simPlaying && simActors.length > 0) {
-					const elapsed = (performance.now() - simStart) / 1000.0;
-					let t = Math.min(1.0, Math.max(0.0, elapsed / simDurationSec));
+				if (simActors.length > 0) {
+					let t;
+					const slider = document.getElementById('simProgress');
+					if (slider && slider.dataset.scrubbing === '1') {
+						// when scrubbing, trust slider value (0..100)
+						t = Math.min(1.0, Math.max(0.0, Number(slider.value) / 100));
+					} else if (simPlaying) {
+						const elapsed = (performance.now() - simStart) / 1000.0;
+						t = Math.min(1.0, Math.max(0.0, elapsed / simDurationSec));
+						if (slider) slider.value = String(t * 100);
+					} else {
+						// paused: keep slider as source of truth if available
+						t = slider
+							? Math.min(1.0, Math.max(0.0, Number(slider.value) / 100))
+							: 0;
+					}
 					for (const a of simActors) {
 						const p = a.pathFn(t);
 						if (p) a.mesh.position.copy(p);
 					}
-					if (t >= 1.0) {
+					if (simPlaying && t >= 1.0) {
 						simPlaying = false;
+						const stopBtn = document.getElementById('stop');
+						if (stopBtn) stopBtn.textContent = 'Resume';
 						flash('#ff3355'); // end marker
 					}
 				}
@@ -800,6 +843,151 @@
 			(function addSetupControls() {
 				const hudBody = document.getElementById('hudBody');
 				let camConfigHandle = null; // File System Access handle
+				let camConfigNameEl = null;
+				async function writePayloadToHandle(handle) {
+					const s1 = computeSetup3Positions();
+					const s2 = computeSetup2Positions();
+					const cams = [];
+					s1.forEach((e, i) =>
+						cams.push({
+							name: `setup1_${i + 1}`,
+							position: [e.pos.x, e.pos.y, e.pos.z],
+							forward: [e.dir.x, e.dir.y, e.dir.z],
+							up: [0, 0, 1],
+							fov_deg: 70,
+						})
+					);
+					s2.forEach((e, i) =>
+						cams.push({
+							name: `setup2_${i + 1}`,
+							position: [e.pos.x, e.pos.y, e.pos.z],
+							forward: [e.dir.x, e.dir.y, e.dir.z],
+							up: [0, 0, 1],
+							fov_deg: 70,
+						})
+					);
+					const payload = { cameras: cams };
+					if (
+						(await handle.queryPermission({ mode: 'readwrite' })) !== 'granted'
+					) {
+						await handle.requestPermission({ mode: 'readwrite' });
+					}
+					const writable = await handle.createWritable();
+					await writable.write(
+						new Blob([JSON.stringify(payload, null, 2)], {
+							type: 'application/json',
+						})
+					);
+					await writable.close();
+				}
+				async function saveNow() {
+					if (!window.showOpenFilePicker) return; // unsupported
+					try {
+						if (!camConfigHandle) {
+							const [handle] = await window.showOpenFilePicker({
+								multiple: false,
+								types: [
+									{
+										description: 'JSON',
+										accept: { 'application/json': ['.json'] },
+									},
+								],
+								excludeAcceptAllOption: false,
+								id: 'cam_config_picker',
+							});
+							camConfigHandle = handle;
+							if (camConfigNameEl)
+								camConfigNameEl.textContent = handle.name || 'cam_config.json';
+						}
+						await writePayloadToHandle(camConfigHandle);
+						flash('#66ff66');
+					} catch (e) {
+						// canceled or failed
+					}
+				}
+				async function saveAsNow() {
+					try {
+						let handle = null;
+						if (window.showSaveFilePicker) {
+							handle = await window.showSaveFilePicker({
+								suggestedName: camConfigHandle?.name || 'cam_config.json',
+								types: [
+									{
+										description: 'JSON',
+										accept: { 'application/json': ['.json'] },
+									},
+								],
+							});
+						} else if (window.showOpenFilePicker) {
+							const [h] = await window.showOpenFilePicker({
+								multiple: false,
+								types: [
+									{
+										description: 'JSON',
+										accept: { 'application/json': ['.json'] },
+									},
+								],
+								excludeAcceptAllOption: false,
+								id: 'cam_config_saveas',
+							});
+							handle = h;
+						}
+						if (!handle) return;
+						await writePayloadToHandle(handle);
+						camConfigHandle = handle; // future Cmd+S targets this
+						if (camConfigNameEl)
+							camConfigNameEl.textContent = handle.name || 'cam_config.json';
+						flash('#66ff66');
+					} catch (e) {
+						// canceled or failed
+					}
+				}
+				// expose for keyboard handlers outside this closure
+				window.__saveCamConfig = saveNow;
+				window.__saveAsCamConfig = saveAsNow;
+				// Load Config UI (sets save target only)
+				const loadRow = document.createElement('div');
+				loadRow.style.display = 'flex';
+				loadRow.style.gap = '8px';
+				loadRow.style.alignItems = 'center';
+				const loadBtn = document.createElement('button');
+				loadBtn.textContent = 'Load Camera Config…';
+				loadBtn.onclick = async () => {
+					if (!window.showOpenFilePicker) return;
+					try {
+						const [handle] = await window.showOpenFilePicker({
+							multiple: false,
+							types: [
+								{
+									description: 'JSON',
+									accept: { 'application/json': ['.json'] },
+								},
+							],
+							excludeAcceptAllOption: false,
+							id: 'cam_config_load',
+						});
+						camConfigHandle = handle;
+						if (camConfigNameEl)
+							camConfigNameEl.textContent = handle.name || 'cam_config.json';
+						// read and apply config values to UI
+						try {
+							const f = await handle.getFile();
+							const txt = await f.text();
+							const data = JSON.parse(txt);
+							if (typeof applyCamConfigFromData === 'function')
+								applyCamConfigFromData(data);
+						} catch (e) {}
+						flash('#55ccff');
+					} catch (e) {}
+				};
+				const fileNameLabel = document.createElement('span');
+				fileNameLabel.style.fontSize = '11px';
+				fileNameLabel.style.color = '#aaa';
+				fileNameLabel.textContent = '';
+				camConfigNameEl = fileNameLabel;
+				loadRow.appendChild(loadBtn);
+				loadRow.appendChild(fileNameLabel);
+				// moved to bottom near Save button
 				const title3 = document.createElement('div');
 				title3.textContent = 'Setup 1';
 				title3.style.margin = '8px 0';
@@ -1043,6 +1231,100 @@
 				hudBody.appendChild(reset4);
 				// (per-setup save removed; unified save provided at bottom)
 
+				// Apply a loaded cam_config.json into Setup 1/2 UI
+				function applyCamConfigFromData(data) {
+					if (!data) return;
+					const cams = Array.isArray(data.cameras)
+						? data.cameras
+						: Array.isArray(data)
+						? data
+						: [];
+					if (cams.length === 0) return;
+					const byName = new Map();
+					for (const c of cams) if (c && c.name) byName.set(String(c.name), c);
+					const s1 = [
+						byName.get('setup1_1'),
+						byName.get('setup1_2'),
+						byName.get('setup1_3'),
+					].filter(Boolean);
+					const s2 = [
+						byName.get('setup2_1'),
+						byName.get('setup2_2'),
+						byName.get('setup2_3'),
+					].filter(Boolean);
+					function arrToVec(a) {
+						return new THREE.Vector3(
+							Number(a?.[0] || 0),
+							Number(a?.[1] || 0),
+							Number(a?.[2] || 0)
+						);
+					}
+					function clamp(meta, v) {
+						return clampValue(meta, v);
+					}
+					// Setup 1
+					if (s1.length === 3) {
+						const pL = arrToVec(s1[0].position);
+						const pC = arrToVec(s1[1].position);
+						const pR = arrToVec(s1[2].position);
+						const zAvg = (pL.z + pC.z + pR.z) / 3;
+						const D = Math.sqrt(pC.x * pC.x + pC.y * pC.y);
+						const aL = Math.atan2(pL.y, pL.x);
+						const aC = Math.atan2(pC.y, pC.x);
+						let deltaDeg = Math.abs(((aL - aC) * 180) / Math.PI);
+						if (deltaDeg > 180) deltaDeg = 360 - deltaDeg;
+						const s1Vals = {
+							heightZ: clamp(setup1ParamMeta.heightZ, zAvg),
+							angleBetweenDeg: clamp(setup1ParamMeta.angleBetweenDeg, deltaDeg),
+							distanceToCenter: clamp(setup1ParamMeta.distanceToCenter, D),
+						};
+						for (const k of Object.keys(s1Vals)) {
+							setup3[k] = Number(s1Vals[k]);
+							if (setup3Inputs && setup3Inputs[k]) {
+								setup3Inputs[k].value = String(s1Vals[k]);
+								if (typeof setup3Inputs[k].onchange === 'function')
+									setup3Inputs[k].onchange();
+							}
+						}
+					}
+					// Setup 2
+					if (s2.length === 3) {
+						const pL = arrToVec(s2[0].position);
+						const pC = arrToVec(s2[1].position);
+						const pR = arrToVec(s2[2].position);
+						const fL = arrToVec(s2[0].forward);
+						const fC = arrToVec(s2[1].forward);
+						const zAvg = (pL.z + pC.z + pR.z) / 3;
+						const D = Math.sqrt(pC.x * pC.x + pC.y * pC.y);
+						const distBetween = pL.distanceTo(pR);
+						// signed azimuth angle around Z from center dir to left dir (XY plane only)
+						const dotXY = fC.x * fL.x + fC.y * fL.y;
+						const crossZ = fC.x * fL.y - fC.y * fL.x;
+						let ang = (Math.atan2(crossZ, dotXY) * 180) / Math.PI;
+						// clamp flare to [-90, 90]
+						if (ang > 180) ang -= 360;
+						if (ang < -180) ang += 360;
+						ang = Math.max(-90, Math.min(90, ang));
+						const s2Vals = {
+							heightZ: clamp(setup2ParamMeta.heightZ, zAvg),
+							distanceBetween: clamp(
+								setup2ParamMeta.distanceBetween,
+								distBetween
+							),
+							flareAngleDeg: clamp(setup2ParamMeta.flareAngleDeg, ang),
+							distanceToCenter: clamp(setup2ParamMeta.distanceToCenter, D),
+						};
+						for (const k of Object.keys(s2Vals)) {
+							setup2[k] = Number(s2Vals[k]);
+							if (setup2Inputs && setup2Inputs[k]) {
+								setup2Inputs[k].value = String(s2Vals[k]);
+								if (typeof setup2Inputs[k].onchange === 'function')
+									setup2Inputs[k].onchange();
+							}
+						}
+					}
+				}
+
 				// Unified save button (bottom of HUD)
 				const saveAllBtn = document.createElement('button');
 				saveAllBtn.id = 'saveAllSetupsBtn';
@@ -1050,66 +1332,47 @@
 				saveAllBtn.textContent = 'Save Camera Configs';
 				saveAllBtn.style.marginTop = '10px';
 				saveAllBtn.onclick = async () => {
-					const s1 = computeSetup3Positions();
-					const s2 = computeSetup2Positions();
-					const cams = [];
-					s1.forEach((e, i) =>
-						cams.push({
-							name: `setup1_${i + 1}`,
-							position: [e.pos.x, e.pos.y, e.pos.z],
-							forward: [e.dir.x, e.dir.y, e.dir.z],
-							up: [0, 0, 1],
-							fov_deg: 70,
-						})
-					);
-					s2.forEach((e, i) =>
-						cams.push({
-							name: `setup2_${i + 1}`,
-							position: [e.pos.x, e.pos.y, e.pos.z],
-							forward: [e.dir.x, e.dir.y, e.dir.z],
-							up: [0, 0, 1],
-							fov_deg: 70,
-						})
-					);
-					// Serverless immediate: on first save prompt picker, then write silently
-					if (!window.showOpenFilePicker) return;
-					try {
-						if (!camConfigHandle) {
-							const [handle] = await window.showOpenFilePicker({
-								multiple: false,
-								types: [
-									{
-										description: 'JSON',
-										accept: { 'application/json': ['.json'] },
-									},
-								],
-								excludeAcceptAllOption: false,
-								id: 'cam_config_picker',
-							});
-							camConfigHandle = handle;
-						}
-						const payload = { cameras: cams };
-						if (
-							(await camConfigHandle.queryPermission({ mode: 'readwrite' })) !==
-							'granted'
-						) {
-							await camConfigHandle.requestPermission({ mode: 'readwrite' });
-						}
-						const writable = await camConfigHandle.createWritable();
-						await writable.write(
-							new Blob([JSON.stringify(payload, null, 2)], {
-								type: 'application/json',
-							})
-						);
-						await writable.close();
-						flash('#66ff66');
-					} catch (e) {
-						// user canceled or write failed; do nothing
-					}
+					await saveNow();
 				};
 				hudBody.appendChild(saveAllBtn);
+				// place Load + filename just below Save
+				loadRow.style.marginTop = '8px';
+				hudBody.appendChild(loadRow);
 			})();
 			document.getElementById('start').onclick = () => startFlight();
+			const simSlider = document.getElementById('simProgress');
+			const stopBtn = document.getElementById('stop');
+			if (simSlider) {
+				simSlider.addEventListener('input', () => {
+					// mark scrubbing and pause playback while dragging
+					simSlider.dataset.scrubbing = '1';
+					simPlaying = false;
+				});
+				simSlider.addEventListener('change', () => {
+					// finished scrubbing
+					simSlider.dataset.scrubbing = '0';
+				});
+			}
+			if (stopBtn) {
+				const updateStopLabel = () => {
+					stopBtn.textContent = simPlaying ? 'Pause' : 'Resume';
+				};
+				stopBtn.onclick = () => {
+					// toggle pause/resume
+					simPlaying = !simPlaying;
+					// when resuming, sync simStart so current slider position stays
+					const slider = document.getElementById('simProgress');
+					if (simPlaying) {
+						const t = slider
+							? Math.min(1.0, Math.max(0.0, Number(slider.value) / 100))
+							: 0;
+						simStart = performance.now() - t * simDurationSec * 1000.0;
+						slider && (slider.dataset.scrubbing = '0');
+					}
+					updateStopLabel();
+				};
+				updateStopLabel();
+			}
 			document
 				.getElementById('scenario')
 				.addEventListener('change', layoutPanels);
@@ -1132,12 +1395,28 @@
 				renderer.setSize(innerWidth, innerHeight);
 				layoutPanels();
 			});
-			// Map Cmd+S to unified save
+			// Map Cmd+S to Save, Cmd+Shift+S to Save As
 			addEventListener('keydown', (ev) => {
 				if (ev.metaKey && (ev.key === 's' || ev.key === 'S')) {
 					ev.preventDefault();
-					const btn = document.getElementById('saveAllSetupsBtn');
-					if (btn) btn.click();
+					if (ev.shiftKey) {
+						if (window.__saveAsCamConfig) window.__saveAsCamConfig();
+					} else {
+						if (window.__saveCamConfig) window.__saveCamConfig();
+					}
+				}
+				// Space = Start flight (ignore when typing)
+				if (ev.code === 'Space' && !ev.metaKey && !ev.ctrlKey && !ev.altKey) {
+					const tag = (ev.target && ev.target.tagName) || '';
+					if (
+						tag !== 'INPUT' &&
+						tag !== 'TEXTAREA' &&
+						tag !== 'SELECT' &&
+						tag !== 'BUTTON'
+					) {
+						ev.preventDefault();
+						startFlight();
+					}
 				}
 			});
 			layoutPanels();
