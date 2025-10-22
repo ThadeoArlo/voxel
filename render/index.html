@@ -117,12 +117,14 @@
 				heightZ: { min: 0, max: 2000, step: 1 },
 				angleBetweenDeg: { min: 0, max: 120, step: 1 }, // equal spacing max 120
 				distanceToCenter: { min: 1, max: 5000, step: 1 },
+				rotationDeg: { min: 0, max: 360, step: 1 },
 			};
 			const setup2ParamMeta = {
 				heightZ: { min: 0, max: 2000, step: 1 },
 				distanceBetween: { min: 0, max: 5000, step: 1 },
 				flareAngleDeg: { min: -90, max: 90, step: 1 },
 				distanceToCenter: { min: 1, max: 5000, step: 1 },
+				rotationDeg: { min: 0, max: 360, step: 1 },
 			};
 			function clampValue(meta, v) {
 				if (!meta) return Number(v);
@@ -605,12 +607,14 @@
 				distanceBetween: 600,
 				flareAngleDeg: 30,
 				distanceToCenter: 800,
+				rotationDeg: 0,
 			};
 			let setup2 = {
 				heightZ: 120,
 				distanceBetween: 600,
 				flareAngleDeg: 30, // angle of left/right outward from center direction
 				distanceToCenter: 800,
+				rotationDeg: 0,
 			};
 			mergeInto(setup2, restoreSetup(LS_KEY_SETUP4));
 			function computeSetup2Positions() {
@@ -618,7 +622,8 @@
 				const centerTarget = new THREE.Vector3(0, 0, 300);
 				const dz = setup2.heightZ;
 				const D = Math.max(1e-6, setup2.distanceToCenter);
-				const a0 = -Math.PI / 2; // center camera base position near (0, -D, dz)
+				const rot = ((Number(setup2.rotationDeg) || 0) * Math.PI) / 180;
+				const a0 = -Math.PI / 2 + rot; // keep existing baseline at -Y when rotation=0
 				const baseC = new THREE.Vector3(D * Math.cos(a0), D * Math.sin(a0), dz);
 				const dirC = centerTarget.clone().sub(baseC).normalize();
 				let lat = new THREE.Vector3(-dirC.y, dirC.x, 0);
@@ -654,11 +659,13 @@
 				heightZ: 120,
 				angleBetweenDeg: 120,
 				distanceToCenter: 1200,
+				rotationDeg: 0,
 			};
 			let setup3 = {
 				heightZ: 120,
 				angleBetweenDeg: 120,
 				distanceToCenter: 1200,
+				rotationDeg: 0,
 			};
 			mergeInto(setup3, restoreSetup(LS_KEY_SETUP3));
 			function computeSetup3Positions() {
@@ -667,18 +674,23 @@
 					(clampValue(setup1ParamMeta.angleBetweenDeg, setup3.angleBetweenDeg) *
 						Math.PI) /
 					180;
+				const rot = ((Number(setup3.rotationDeg) || 0) * Math.PI) / 180;
 				const z = setup3.heightZ;
 				const centerTarget = new THREE.Vector3(0, 0, 300);
-				// Default orientation: center arrow along +Y (green axis)
-				const c = new THREE.Vector3(R * Math.cos(0), R * Math.sin(0), z);
+				// Orientation: rotate the tripod around Z by rot (center at angle=rot)
+				const c = new THREE.Vector3(
+					R * Math.cos(rot + 0),
+					R * Math.sin(rot + 0),
+					z
+				);
 				const l = new THREE.Vector3(
-					R * Math.cos(+delta),
-					R * Math.sin(+delta),
+					R * Math.cos(rot + delta),
+					R * Math.sin(rot + delta),
 					z
 				);
 				const r = new THREE.Vector3(
-					R * Math.cos(-delta),
-					R * Math.sin(-delta),
+					R * Math.cos(rot - delta),
+					R * Math.sin(rot - delta),
 					z
 				);
 				return [l, c, r].map((p) => ({
@@ -1048,6 +1060,7 @@
 				}
 				addParam3('Height Z (units)', 'heightZ');
 				addParam3('Angle between (deg)', 'angleBetweenDeg');
+				addParam3('Rotation (deg)', 'rotationDeg');
 				addParam3('Distance to center (units)', 'distanceToCenter');
 				hudBody.appendChild(params3);
 				const row3 = document.createElement('div');
@@ -1171,6 +1184,7 @@
 				addParam('Height Z (units)', 'heightZ');
 				addParam('Distance between (units)', 'distanceBetween');
 				addParam('Flare angle (deg)', 'flareAngleDeg');
+				addParam('Rotation (deg)', 'rotationDeg');
 				addParam('Distance to center (units)', 'distanceToCenter');
 				hudBody.appendChild(params);
 				const row = document.createElement('div');
@@ -1273,10 +1287,13 @@
 						const aC = Math.atan2(pC.y, pC.x);
 						let deltaDeg = Math.abs(((aL - aC) * 180) / Math.PI);
 						if (deltaDeg > 180) deltaDeg = 360 - deltaDeg;
+						let rot1 = (aC * 180) / Math.PI;
+						if (rot1 < 0) rot1 += 360;
 						const s1Vals = {
 							heightZ: clamp(setup1ParamMeta.heightZ, zAvg),
 							angleBetweenDeg: clamp(setup1ParamMeta.angleBetweenDeg, deltaDeg),
 							distanceToCenter: clamp(setup1ParamMeta.distanceToCenter, D),
+							rotationDeg: clamp(setup1ParamMeta.rotationDeg, rot1),
 						};
 						for (const k of Object.keys(s1Vals)) {
 							setup3[k] = Number(s1Vals[k]);
@@ -1305,6 +1322,10 @@
 						if (ang > 180) ang -= 360;
 						if (ang < -180) ang += 360;
 						ang = Math.max(-90, Math.min(90, ang));
+						// rotation around center (0 deg keeps center at -Y); infer from center position angle
+						let aC = Math.atan2(pC.y, pC.x); // actual center azimuth
+						let rot2 = (aC * 180) / Math.PI + 90; // compensate baseline of -90 deg
+						rot2 = ((rot2 % 360) + 360) % 360;
 						const s2Vals = {
 							heightZ: clamp(setup2ParamMeta.heightZ, zAvg),
 							distanceBetween: clamp(
@@ -1313,6 +1334,7 @@
 							),
 							flareAngleDeg: clamp(setup2ParamMeta.flareAngleDeg, ang),
 							distanceToCenter: clamp(setup2ParamMeta.distanceToCenter, D),
+							rotationDeg: clamp(setup2ParamMeta.rotationDeg, rot2),
 						};
 						for (const k of Object.keys(s2Vals)) {
 							setup2[k] = Number(s2Vals[k]);
