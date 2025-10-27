@@ -25,6 +25,7 @@ import argparse
 from pathlib import Path
 import numpy as np
 import pyvista as pv
+import requests
 
 
 def load_voxel_grid(filename):
@@ -140,6 +141,97 @@ def rotation_matrix_xyz(rx_deg, ry_deg, rz_deg):
     return Rfinal
 
 
+def _fetch_elevation_grid_opentopo(lat_center, lon_center, lat_span, lon_span, grid_size=128, dataset="mapzen"):
+    """
+    Fetch a grid_size x grid_size elevation grid (meters) from OpenTopoData around
+    (lat_center, lon_center) covering the provided lat/lon spans.
+
+    dataset options: 'mapzen' (global), 'srtm30m' (US), 'eudem25m' (EU) etc.
+    """
+    # Build query locations row-major from top-left to bottom-right for human sanity
+    lat_min = lat_center - lat_span * 0.5
+    lat_max = lat_center + lat_span * 0.5
+    lon_min = lon_center - lon_span * 0.5
+    lon_max = lon_center + lon_span * 0.5
+
+    lats = np.linspace(lat_max, lat_min, grid_size)  # top to bottom
+    lons = np.linspace(lon_min, lon_max, grid_size)  # left to right
+
+    locations = [f"{lat:.6f},{lon:.6f}" for lat in lats for lon in lons]
+
+    elevations = []
+    for i in range(0, len(locations), 100):
+        chunk = locations[i:i+100]
+        url = f"https://api.opentopodata.org/v1/{dataset}?locations={'|'.join(chunk)}"
+        try:
+            r = requests.get(url, timeout=30)
+            if r.status_code != 200:
+                raise RuntimeError(f"OpenTopoData HTTP {r.status_code}")
+            data = r.json()
+            # Some results may have null elevation; coerce to 0
+            elevations.extend([float(res.get("elevation") or 0.0) for res in data.get("results", [])])
+        except Exception as e:
+            raise RuntimeError(f"Failed fetching OpenTopoData: {e}")
+
+    if len(elevations) != grid_size * grid_size:
+        raise RuntimeError("Unexpected elevation sample count")
+
+    grid = np.array(elevations, dtype=np.float32).reshape((grid_size, grid_size))
+    # Replace NaNs just in case
+    grid = np.nan_to_num(grid, nan=0.0)
+    return grid
+
+
+def add_terrain_overlay_fit_grid(plotter, grid_min, grid_max, lat, lon,
+                                 grid_size=128, opacity=0.5, vertical_scale=1.0,
+                                 base_z=0.0, cmap="terrain", dataset="mapzen"):
+    """
+    Fetch elevation around (lat, lon) and render a terrain mesh that fits exactly
+    within [grid_min.x..grid_max.x] x [grid_min.y..grid_max.y].
+
+    - grid_min, grid_max: np.array([x,y,z]) bounds of the voxel grid in world units
+    - vertical_scale: multiply elevation meters to match your scene Z scale
+    - base_z: world Z offset at which to place elevation=0
+    """
+    width_m = float(grid_max[0] - grid_min[0])
+    height_m = float(grid_max[1] - grid_min[1])
+
+    # Convert XY extents (meters) to approximate lat/lon spans (degrees)
+    # 1 degree latitude ~ 111 km, longitude scaled by cos(latitude)
+    lat_span_deg = max(1e-6, (height_m / 1000.0) / 111.0)
+    lon_span_deg = max(1e-6, (width_m / 1000.0) / (111.0 * max(1e-6, math.cos(math.radians(lat)))))
+
+    elev_grid = _fetch_elevation_grid_opentopo(lat, lon, lat_span_deg, lon_span_deg,
+                                               grid_size=grid_size, dataset=dataset)
+
+    # Build a PyVista UniformGrid matching XY extents
+    spacing_x = width_m / max(1, grid_size - 1)
+    spacing_y = height_m / max(1, grid_size - 1)
+    terrain = pv.UniformGrid(
+        dimensions=(grid_size, grid_size, 1),
+        spacing=(spacing_x, spacing_y, 1.0),
+        origin=(float(grid_min[0]), float(grid_min[1]), float(base_z))
+    )
+
+    # Apply elevation as scalars and warp
+    terrain["elevation"] = (elev_grid.T.flatten(order="C") * float(vertical_scale))
+    # Warp along +Z by the elevation scalar
+    warped = terrain.warp_by_scalar("elevation", factor=1.0)
+
+    # Color by elevation (colormap); smooth shading for nicer look
+    plotter.add_mesh(
+        warped,
+        scalars="elevation",
+        cmap=cmap,
+        opacity=float(opacity),
+        smooth_shading=True,
+        show_edges=False,
+    )
+
+    min_e, max_e = float(elev_grid.min()), float(elev_grid.max())
+    print(f"[terrain] OpenTopoData loaded {grid_size}x{grid_size} (range {min_e:.1f}..{max_e:.1f} m)")
+
+
 def get_next_image_index(folder, prefix="voxel_", suffix=".png"):
     """
     Scan 'folder' for files named like 'voxel_XXXX.png'.
@@ -167,6 +259,14 @@ def main():
     ap.add_argument("--center", dest="center", default=None, help="Grid center as 'x,y,z' (overrides JSON)")
     ap.add_argument("--percentile", type=float, default=99.9, help="Top percentile to show (e.g., 99.9)")
     ap.add_argument("--rotate", default="90,270,0", help="Euler rotation degrees 'rx,ry,rz' applied to points")
+    # Terrain overlay options (off by default; enable with --terrain)
+    ap.add_argument("--terrain", default=None, help="Terrain center as 'lat,lon' (e.g., '37.7749,-122.4194' for SF)")
+    ap.add_argument("--terrain-grid", type=int, default=128, help="Terrain grid resolution N (NxN), default 128")
+    ap.add_argument("--terrain-opacity", type=float, default=0.45, help="Terrain opacity (0..1)")
+    ap.add_argument("--terrain-scale", type=float, default=1.0, help="Vertical scale factor for elevation (meters -> world units)")
+    ap.add_argument("--terrain-z", type=float, default=0.0, help="World Z offset for terrain base (elevation=0)")
+    ap.add_argument("--terrain-cmap", default="terrain", help="Matplotlib colormap name for terrain colors")
+    ap.add_argument("--terrain-dataset", default="mapzen", help="OpenTopoData dataset (e.g., mapzen, eudem25m, srtm30m)")
     args = ap.parse_args()
 
     bin_path = Path(args.bin_path)
@@ -263,6 +363,33 @@ def main():
         render_points_as_spheres=True,
         opacity=0.05,
     )
+
+    # Optionally add a terrain overlay that fits the grid XY extents
+    if args.terrain:
+        try:
+            lat_str, lon_str = str(args.terrain).split(",")
+            lat = float(lat_str.strip())
+            lon = float(lon_str.strip())
+            # Compute voxel grid bounds in world units
+            N = int(voxel_grid.shape[0])
+            half_side = (N * vox_size) * 0.5
+            grid_min = grid_center - half_side
+            grid_max = grid_center + half_side
+            add_terrain_overlay_fit_grid(
+                plotter,
+                grid_min=grid_min,
+                grid_max=grid_max,
+                lat=lat,
+                lon=lon,
+                grid_size=max(16, int(args.terrain_grid)),
+                opacity=float(args.terrain_opacity),
+                vertical_scale=float(args.terrain_scale),
+                base_z=float(args.terrain_z),
+                cmap=str(args.terrain_cmap),
+                dataset=str(args.terrain_dataset),
+            )
+        except Exception as e:
+            print(f"[terrain] Error: {e}")
 
     # plotter.add_scalar_bar(
     #     title="Brightness",

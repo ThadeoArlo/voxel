@@ -1,159 +1,182 @@
-import cv2
-import multiprocessing
-import time
 import os
+import time
+import threading
 
-# ===== CONFIGURATION =====
-NUM_CAMERAS = 3
-RECORDING_DURATION = 5  # seconds
-FPS = 30
-FRAME_WIDTH = 640
-FRAME_HEIGHT = 480
-OUTPUT_FOLDER = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'rec')
-STAGGER_INIT_DELAY = 2  # Seconds between camera initializations
-# =========================
+import cv2
 
-def record_camera(camera_index, duration, fps, width, height, output_folder, ready_queue, start_barrier):
-    """Record video from a single camera"""
-    
-    print(f"Camera {camera_index + 1}: Initializing...")
-    
-    # Open camera
-    cap = cv2.VideoCapture(camera_index)
-    
-    if not cap.isOpened():
-        print(f"Camera {camera_index + 1}: ERROR - Could not open")
-        ready_queue.put((camera_index, False))
-        return
-    
-    # Set camera properties
-    cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc('M','J','P','G'))
-    cap.set(cv2.CAP_PROP_FRAME_WIDTH, width)
-    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
-    cap.set(cv2.CAP_PROP_FPS, fps)
-    cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
-    
-    # Get actual dimensions
-    actual_width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-    actual_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-    actual_fps = cap.get(cv2.CAP_PROP_FPS)
-    
-    print(f"Camera {camera_index + 1}: Opened at {actual_width}x{actual_height} @ {actual_fps:.1f}fps")
-    
-    # Warm up camera - read and discard frames
-    print(f"Camera {camera_index + 1}: Warming up...")
-    warmup_count = 0
-    for _ in range(30):
-        ret, frame = cap.read()
-        if ret:
-            warmup_count += 1
-    
-    if warmup_count < 20:
-        print(f"Camera {camera_index + 1}: WARNING - Only {warmup_count}/30 warmup frames successful")
-    
-    # Create output file
-    filename = os.path.join(output_folder, f"{camera_index + 1}.mp4")
-    fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-    out = cv2.VideoWriter(filename, fourcc, fps, (actual_width, actual_height))
-    
-    if not out.isOpened():
-        print(f"Camera {camera_index + 1}: ERROR - Could not create video file")
-        cap.release()
-        ready_queue.put((camera_index, False))
-        return
-    
-    print(f"Camera {camera_index + 1}: ✓ READY and waiting for sync...")
-    
-    # Signal this camera is ready
-    ready_queue.put((camera_index, True))
-    
-    # Wait for all cameras to be ready
-    start_barrier.wait()
-    
-    print(f"Camera {camera_index + 1}: 🔴 RECORDING NOW!")
-    
-    start_time = time.time()
-    frame_count = 0
-    failed_reads = 0
-    
-    while time.time() - start_time < duration:
-        ret, frame = cap.read()
-        
-        if ret:
-            out.write(frame)
-            frame_count += 1
-            failed_reads = 0
-        else:
-            failed_reads += 1
-            if failed_reads > 30:
-                print(f"Camera {camera_index + 1}: ERROR - Too many failed reads")
-                break
-    
-    # Cleanup
+
+# ====== Editable settings ======
+# Auto-discover working cameras under /dev/video* (recommended)
+AUTO_DISCOVER = True
+
+# If not auto-discovering, specify camera indices here
+CAMERA_INDICES = [0, 1, 2]
+
+# Output directory and filenames (saved as MP4)
+OUTPUT_DIR = "rec"
+OUTPUT_FILENAMES = ["1.mp4", "2.mp4", "3.mp4"]
+
+# Duration of recording in seconds
+DURATION_SECONDS = 5
+
+# Basic capture settings (very light for stress-free triple capture)
+TARGET_FPS = 10.0
+FRAME_WIDTH = 320
+FRAME_HEIGHT = 240
+
+# Video codec for MP4 files. 'mp4v' is broadly compatible.
+FOURCC = "mp4v"
+INPUT_FOURCC = "MJPG"  # ask webcams for MJPG to reduce USB bandwidth
+
+
+def try_open_capture(source):
+    """Try to open a camera source with robust fallbacks.
+
+    Source can be an int index (e.g., 0) or a string path (e.g., "/dev/video0").
+    """
+    # Try V4L2 first
+    cap = cv2.VideoCapture(source, cv2.CAP_V4L2)
+    if cap.isOpened():
+        return cap
     cap.release()
-    out.release()
-    
-    elapsed = time.time() - start_time
-    actual_fps_recorded = frame_count / elapsed if elapsed > 0 else 0
-    
-    print(f"Camera {camera_index + 1}: ✓ COMPLETED - {frame_count} frames in {elapsed:.2f}s ({actual_fps_recorded:.1f} fps)")
 
-def main():
-    print(f"\n{'='*60}")
-    print(f"  Recording from {NUM_CAMERAS} cameras for {RECORDING_DURATION} seconds")
-    print(f"{'='*60}\n")
-    
-    # Create output folder
-    if not os.path.exists(OUTPUT_FOLDER):
-        os.makedirs(OUTPUT_FOLDER)
-        print(f"Created folder: {OUTPUT_FOLDER}\n")
-    
-    # Create synchronization primitives
-    ready_queue = multiprocessing.Queue()
-    start_barrier = multiprocessing.Barrier(NUM_CAMERAS)
-    
-    # Create processes for each camera
-    processes = []
-    for i in range(NUM_CAMERAS):
-        p = multiprocessing.Process(
-            target=record_camera,
-            args=(i, RECORDING_DURATION, FPS, FRAME_WIDTH, FRAME_HEIGHT, OUTPUT_FOLDER, ready_queue, start_barrier)
-        )
-        processes.append(p)
-    
-    # Start all camera processes
-    print("Starting camera initialization...\n")
-    for p in processes:
-        p.start()
-    
-    # Wait for all cameras to report ready
-    ready_cameras = []
-    failed_cameras = []
-    
-    for _ in range(NUM_CAMERAS):
-        cam_index, success = ready_queue.get()
-        if success:
-            ready_cameras.append(cam_index + 1)
-        else:
-            failed_cameras.append(cam_index + 1)
-    
-    print(f"\n{'='*60}")
-    if failed_cameras:
-        print(f"⚠️  WARNING: Camera(s) {failed_cameras} failed to initialize")
-    if ready_cameras:
-        print(f"✓ All {len(ready_cameras)} camera(s) ready: {ready_cameras}")
-        print(f"{'='*60}")
-        print(f"\n🎬 Starting synchronized recording...\n")
-    
-    # Wait for all processes to complete
-    for p in processes:
-        p.join()
-    
-    print(f"\n{'='*60}")
-    print(f"  ✓ All recordings completed!")
-    print(f"  Videos saved in: {OUTPUT_FOLDER}")
-    print(f"{'='*60}\n")
+    # Fallback to ANY backend
+    cap = cv2.VideoCapture(source, cv2.CAP_ANY)
+    if cap.isOpened():
+        return cap
+    cap.release()
+
+    # If given an int index, also try the device path explicitly
+    if isinstance(source, int):
+        dev = f"/dev/video{source}"
+        cap = cv2.VideoCapture(dev, cv2.CAP_ANY)
+        if cap.isOpened():
+            return cap
+        cap.release()
+
+    # If given a device path, try a simple GStreamer pipeline as last resort
+    if isinstance(source, str) and os.path.exists(source):
+        gst = f"v4l2src device={source} ! videoconvert ! appsink"
+        cap = cv2.VideoCapture(gst, cv2.CAP_GSTREAMER)
+        if cap.isOpened():
+            return cap
+        cap.release()
+
+    return cv2.VideoCapture()  # unopened
+
+
+def discover_cameras(required: int = 3, max_scan: int = 10):
+    found = []
+    for i in range(max_scan):
+        dev = f"/dev/video{i}"
+        if not os.path.exists(dev):
+            continue
+        cap = try_open_capture(dev)
+        if cap.isOpened():
+            cap.release()
+            found.append(dev)
+            if len(found) >= required:
+                break
+    return found
+
+
+def record_from_camera(source, output_path: str, duration_seconds: float) -> None:
+    start_time = time.time()
+
+    # Aggressive retries to open the camera to avoid race/USB contention
+    cap = None
+    for _ in range(50):  # ~5s total with 0.1s sleep
+        cap = try_open_capture(source)
+        if cap.isOpened():
+            break
+        time.sleep(0.1)
+    if cap is None or not cap.isOpened():
+        print(f"[{source}] ERROR: Could not open camera after retries.")
+        return
+
+    # Try to set basic properties; some cameras might ignore these.
+    try:
+        cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*INPUT_FOURCC))
+    except Exception:
+        pass
+    cap.set(cv2.CAP_PROP_FRAME_WIDTH, FRAME_WIDTH)
+    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, FRAME_HEIGHT)
+    cap.set(cv2.CAP_PROP_FPS, TARGET_FPS)
+
+    actual_width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)) or FRAME_WIDTH
+    actual_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT)) or FRAME_HEIGHT
+    fps_for_writer = cap.get(cv2.CAP_PROP_FPS) or TARGET_FPS
+    if fps_for_writer <= 0:
+        fps_for_writer = TARGET_FPS
+
+    fourcc = cv2.VideoWriter_fourcc(*FOURCC)
+    writer = cv2.VideoWriter(output_path, fourcc, fps_for_writer, (actual_width, actual_height))
+    if not writer.isOpened():
+        print(f"[{source}] ERROR: Could not open writer for {output_path}.")
+        cap.release()
+        return
+
+    print(f"[{source}] Recording {os.path.basename(output_path)} at {actual_width}x{actual_height}@{fps_for_writer:.1f}fps")
+
+    try:
+        consecutive_failures = 0
+        while (time.time() - start_time) < duration_seconds:
+            ok, frame = cap.read()
+            if not ok or frame is None:
+                consecutive_failures += 1
+                if consecutive_failures >= 10:
+                    # Attempt to reinitialize the capture mid-run
+                    cap.release()
+                    time.sleep(0.1)
+                    cap = try_open_capture(source)
+                    consecutive_failures = 0
+                time.sleep(0.005)
+                continue
+            consecutive_failures = 0
+            writer.write(frame)
+    finally:
+        writer.release()
+        cap.release()
+        print(f"[{source}] Done.")
+
+
+def main() -> None:
+    os.makedirs(OUTPUT_DIR, exist_ok=True)
+
+    # Build list of sources
+    if AUTO_DISCOVER:
+        sources = discover_cameras(required=3, max_scan=10)
+        if len(sources) < 3:
+            print("WARNING: Fewer than 3 working cameras discovered; proceeding with available.")
+    else:
+        sources = CAMERA_INDICES[:3]
+
+    # Align sources with desired output filenames (first 3 entries)
+    pairs = list(zip(sources[:3], OUTPUT_FILENAMES[:3]))
+    if len(pairs) < 3:
+        print("WARNING: Less than 3 sources or filenames configured; proceeding with available pairs.")
+
+    threads = []
+    for cam_idx, name in pairs:
+        output_path = os.path.join(OUTPUT_DIR, name)
+        t = threading.Thread(target=record_from_camera, args=(cam_idx, output_path, DURATION_SECONDS), daemon=True)
+        threads.append(t)
+
+    print(f"Starting {len(threads)} cameras for {DURATION_SECONDS}s...")
+    for t in threads:
+        t.start()
+        time.sleep(0.3)  # stagger starts to reduce USB bandwidth spikes
+
+    try:
+        for t in threads:
+            t.join()
+    except KeyboardInterrupt:
+        print("Interrupted by user. Stopping...")
+
+    print("All recordings complete.")
+
 
 if __name__ == "__main__":
-    multiprocessing.set_start_method('spawn', force=True)
     main()
+
+
