@@ -80,8 +80,7 @@ def discover_cameras(required: int = 3, max_scan: int = 10):
     return found
 
 
-def record_from_camera(source, output_path: str, duration_seconds: float) -> None:
-    start_time = time.time()
+def record_from_camera(source, output_path: str, duration_seconds: float, start_barrier: threading.Barrier) -> None:
 
     # Aggressive retries to open the camera to avoid race/USB contention
     cap = None
@@ -117,6 +116,10 @@ def record_from_camera(source, output_path: str, duration_seconds: float) -> Non
         return
 
     print(f"[{source}] Recording {os.path.basename(output_path)} at {actual_width}x{actual_height}@{fps_for_writer:.1f}fps")
+
+    # Synchronize start across all cameras
+    start_barrier.wait()
+    start_time = time.time()
 
     try:
         consecutive_failures = 0
@@ -156,16 +159,29 @@ def main() -> None:
     if len(pairs) < 3:
         print("WARNING: Less than 3 sources or filenames configured; proceeding with available pairs.")
 
+    if len(pairs) == 0:
+        print("No camera/output pairs available. Exiting.")
+        return
+
+    # Create a barrier so all threads start recording at the same time
+    start_barrier = threading.Barrier(len(pairs) + 1)
+
     threads = []
     for cam_idx, name in pairs:
         output_path = os.path.join(OUTPUT_DIR, name)
-        t = threading.Thread(target=record_from_camera, args=(cam_idx, output_path, DURATION_SECONDS), daemon=True)
+        t = threading.Thread(
+            target=record_from_camera,
+            args=(cam_idx, output_path, DURATION_SECONDS, start_barrier),
+            daemon=True,
+        )
         threads.append(t)
 
-    print(f"Starting {len(threads)} cameras for {DURATION_SECONDS}s...")
+    print(f"Preparing {len(threads)} cameras; will start simultaneously for {DURATION_SECONDS}s...")
     for t in threads:
         t.start()
-        time.sleep(0.3)  # stagger starts to reduce USB bandwidth spikes
+
+    # Release all threads to start recording at the same instant
+    start_barrier.wait()
 
     try:
         for t in threads:
