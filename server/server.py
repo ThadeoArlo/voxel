@@ -15,7 +15,9 @@ import cv2
 ROOT = Path(__file__).resolve().parent
 PUBLIC_DIR = ROOT / "public"
 # JSON tracks are still produced under render/output
-OUTPUT_DIR = ROOT.parent / "render" / "output"
+RENDER_DIR = ROOT.parent / "render"
+OUTPUT_DIR = RENDER_DIR / "output"
+CAM_CONFIG_PATH = RENDER_DIR / "cam_config.json"
 
 app = FastAPI()
 app.add_middleware(
@@ -233,6 +235,16 @@ def get_scene(name: str):
         return json.loads(fp.read_text())
     except Exception:
         raise HTTPException(500, detail="Failed to read scene JSON")
+
+
+@app.get("/api/cam_config")
+def get_cam_config():
+    if not CAM_CONFIG_PATH.exists():
+        raise HTTPException(404, detail="Camera config not found")
+    try:
+        return json.loads(CAM_CONFIG_PATH.read_text())
+    except Exception:
+        raise HTTPException(500, detail="Failed to read camera config")
 
 
 if __name__ == "__main__":

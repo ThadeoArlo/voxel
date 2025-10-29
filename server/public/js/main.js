@@ -223,6 +223,70 @@
 				spr.scale.set(widthWorld, heightWorld, 1);
 				return spr;
 			}
+		const camConfigObjects = [];
+		function clearCameraConfigObjects() {
+			while (camConfigObjects.length) {
+				const obj = camConfigObjects.pop();
+				if (obj && obj.parent) obj.parent.remove(obj);
+			}
+		}
+		function buildCameraConfigVisualsFromData(data) {
+			const cams = Array.isArray(data?.cameras)
+				? data.cameras
+				: Array.isArray(data)
+				? data
+				: [];
+			if (!Array.isArray(cams)) return;
+			clearCameraConfigObjects();
+			for (const cam of cams) {
+				if (!cam) continue;
+				const pos = Array.isArray(cam.position) ? cam.position : null;
+				const fwd = Array.isArray(cam.forward) ? cam.forward : null;
+				if (!pos || !fwd || pos.length < 3 || fwd.length < 3) continue;
+				const origin = new THREE.Vector3(
+					Number(pos[0]) || 0,
+					Number(pos[1]) || 0,
+					Number(pos[2]) || 0
+				);
+				const dir = new THREE.Vector3(
+					Number(fwd[0]) || 0,
+					Number(fwd[1]) || 0,
+					Number(fwd[2]) || 0
+				);
+				if (dir.length() < 1e-6) continue;
+				dir.normalize();
+				const color = 0xffdd44;
+				const arrowLen = 150;
+				const arrow = new THREE.ArrowHelper(dir, origin, arrowLen, color, 30, 15);
+				arrow.userData = { type: 'cam_config', name: cam.name || '' };
+				scene.add(arrow);
+				camConfigObjects.push(arrow);
+				const marker = new THREE.Mesh(
+					new THREE.SphereGeometry(6, 16, 12),
+					new THREE.MeshBasicMaterial({ color })
+				);
+				marker.position.copy(origin);
+				marker.userData = { type: 'cam_config', name: cam.name || '' };
+				scene.add(marker);
+				camConfigObjects.push(marker);
+				const label = makeTextSprite(cam.name || 'cam', color, 18);
+				label.position.copy(
+					origin.clone().add(dir.clone().multiplyScalar(arrowLen + 20))
+				);
+				scene.add(label);
+				camConfigObjects.push(label);
+			}
+		}
+		async function loadCameraConfigFromServer() {
+			try {
+				const res = await fetch('/api/cam_config', { cache: 'no-store' });
+				if (!res.ok) return;
+				const data = await res.json();
+				buildCameraConfigVisualsFromData(data);
+			} catch (e) {
+				// noop
+			}
+		}
 			addAxis(new THREE.Vector3(1, 0, 0), 0xff5555, 'X');
 			addAxis(new THREE.Vector3(0, 1, 0), 0x55ff55, 'Y');
 			addAxis(new THREE.Vector3(0, 0, 1), 0x5599ff, 'Z');
@@ -700,6 +764,7 @@
 				});
 			}
 			makeArrows();
+		loadCameraConfigFromServer();
 			function setSetup3POV(i) {
 				const pos =
 					computeSetup3Positions()[i]?.pos ||
@@ -933,10 +998,25 @@
 				loadRow.style.display = 'flex';
 				loadRow.style.gap = '8px';
 				loadRow.style.alignItems = 'center';
-				const loadBtn = document.createElement('button');
-				loadBtn.textContent = 'Load Camera Config…';
-				loadBtn.onclick = async () => {
-					if (!window.showOpenFilePicker) return;
+			const loadBtn = document.createElement('button');
+			loadBtn.textContent = 'Load Camera Config…';
+			loadBtn.onclick = async () => {
+				async function applyFromFile(file, labelName) {
+					if (!file) return;
+					try {
+						const txt = await file.text();
+						const data = JSON.parse(txt);
+						if (camConfigNameEl)
+							camConfigNameEl.textContent = labelName || file.name || 'cam_config.json';
+						if (typeof applyCamConfigFromData === 'function')
+							applyCamConfigFromData(data);
+						buildCameraConfigVisualsFromData(data);
+						flash('#55ccff');
+					} catch (err) {
+						alert('Failed to read camera config');
+					}
+				}
+				if (typeof window.showOpenFilePicker === 'function') {
 					try {
 						const [handle] = await window.showOpenFilePicker({
 							multiple: false,
@@ -950,19 +1030,20 @@
 							id: 'cam_config_load',
 						});
 						camConfigHandle = handle;
-						if (camConfigNameEl)
-							camConfigNameEl.textContent = handle.name || 'cam_config.json';
-						// read and apply config values to UI
-						try {
-							const f = await handle.getFile();
-							const txt = await f.text();
-							const data = JSON.parse(txt);
-							if (typeof applyCamConfigFromData === 'function')
-								applyCamConfigFromData(data);
-						} catch (e) {}
-						flash('#55ccff');
+						const file = await handle.getFile();
+						await applyFromFile(file, handle.name || file.name);
 					} catch (e) {}
-				};
+				} else {
+					const input = document.createElement('input');
+					input.type = 'file';
+					input.accept = 'application/json';
+					input.onchange = async (ev) => {
+						const file = ev.target.files && ev.target.files[0];
+						await applyFromFile(file, file?.name);
+					};
+					input.click();
+				}
+			};
 				const fileNameLabel = document.createElement('span');
 				fileNameLabel.style.fontSize = '11px';
 				fileNameLabel.style.color = '#aaa';
@@ -1219,6 +1300,7 @@
 				// Apply a loaded cam_config.json into Setup 1/2 UI
 				function applyCamConfigFromData(data) {
 					if (!data) return;
+					buildCameraConfigVisualsFromData(data);
 					const cams = Array.isArray(data.cameras)
 						? data.cameras
 						: Array.isArray(data)
