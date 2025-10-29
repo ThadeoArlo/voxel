@@ -230,7 +230,7 @@ def main():
         if not scene_dir.exists() or not scene_dir.is_dir():
             raise SystemExit(f"Scene folder not found: {scene_dir}")
         allowed_exts = {".mp4", ".mov", ".avi", ".mkv", ".MP4", ".MOV", ".AVI", ".MKV"}
-        videos = sorted([str(p) for p in scene_dir.iterdir() if p.suffix in allowed_exts])
+        videos = sorted([str(p) for p in scene_dir.iterdir() if p.suffix in allowed_exts and not p.name.startswith('.')])
         if not videos:
             raise SystemExit(f"No videos found in scene folder: {scene_dir}")
         print(f"[info] Processing scene '{args.scene}' with {len(videos)} video(s) from {scene_dir}")

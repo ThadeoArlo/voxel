@@ -1,6 +1,7 @@
 import os
 import time
 import threading
+from pathlib import Path
 
 import cv2
 
@@ -13,7 +14,8 @@ AUTO_DISCOVER = True
 CAMERA_INDICES = [0, 1, 2]
 
 # Output directory and filenames (saved as MP4)
-OUTPUT_DIR = "rec"
+# Using Path(__file__).parent ensures it's relative to this script's location
+OUTPUT_DIR = Path(__file__).parent / "rec"
 OUTPUT_FILENAMES = ["1.mp4", "2.mp4", "3.mp4"]
 
 # Duration of recording in seconds
@@ -144,7 +146,7 @@ def record_from_camera(source, output_path: str, duration_seconds: float, start_
 
 
 def main() -> None:
-    os.makedirs(OUTPUT_DIR, exist_ok=True)
+    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
     # Build list of sources
     if AUTO_DISCOVER:
@@ -168,7 +170,7 @@ def main() -> None:
 
     threads = []
     for cam_idx, name in pairs:
-        output_path = os.path.join(OUTPUT_DIR, name)
+        output_path = str(OUTPUT_DIR / name)
         t = threading.Thread(
             target=record_from_camera,
             args=(cam_idx, output_path, DURATION_SECONDS, start_barrier),

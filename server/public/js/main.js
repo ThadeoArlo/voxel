@@ -13,6 +13,53 @@
 				};
 			}
 
+			// Cameras overlay wiring
+			const camOverlay = document.getElementById('camOverlay');
+			const camGrid = document.getElementById('camGrid');
+			const showCamerasBtn = document.getElementById('showCameras');
+			const closeCamOverlayBtn = document.getElementById('closeCamOverlay');
+			async function refreshCameras() {
+				if (!camGrid) return;
+				camGrid.innerHTML = '';
+				try {
+					const res = await fetch('/api/cameras');
+					const cams = (await res.json()) || [];
+					for (const c of cams) {
+						const tile = document.createElement('div');
+						tile.className = 'cam-tile';
+						const title = document.createElement('div');
+						title.className = 'cam-title';
+						title.textContent = `${c.name ?? 'Camera'} (${c.idx})`;
+						tile.appendChild(title);
+						const img = document.createElement('img');
+						img.className = 'cam-video';
+						img.src = `/stream/${c.idx}`;
+						img.loading = 'eager';
+						img.decoding = 'async';
+						tile.appendChild(img);
+						camGrid.appendChild(tile);
+					}
+				} catch (e) {
+					const err = document.createElement('div');
+					err.style.color = '#f66';
+					err.textContent = 'Failed to load cameras';
+					camGrid.appendChild(err);
+				}
+			}
+			function openCamOverlay() {
+				if (!camOverlay) return;
+				camOverlay.style.display = 'flex';
+				refreshCameras();
+			}
+			function closeCamOverlay() {
+				if (!camOverlay) return;
+				// stop streams by removing elements
+				if (camGrid) camGrid.innerHTML = '';
+				camOverlay.style.display = 'none';
+			}
+			if (showCamerasBtn) showCamerasBtn.onclick = openCamOverlay;
+			if (closeCamOverlayBtn) closeCamOverlayBtn.onclick = closeCamOverlay;
+
 			// Persist UI state across reloads
 			const LS_KEY_SETUP3 = 'vp_setup3';
 			const LS_KEY_SETUP4 = 'vp_setup2';

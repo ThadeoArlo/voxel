@@ -18,6 +18,7 @@
 		<div id="hud">
 			<div id="hudHeader" class="hud-header">
 				<span class="hud-title">Settings</span>
+				<button id="showCameras" class="toggle-btn" title="Show Cameras">Show Cameras</button>
 				<button id="toggleHud" class="toggle-btn" title="Hide/Show settings">
 					Hide
 				</button>
@@ -72,6 +73,14 @@
 					</div>
 				</div>
 			</div>
+		</div>
+		<!-- Cameras overlay -->
+		<div id="camOverlay" style="display:none">
+			<div id="camOverlayHeader">
+				<span>Live Cameras</span>
+				<button id="closeCamOverlay">Close</button>
+			</div>
+			<div id="camGrid"></div>
 		</div>
 		<script type="module" src="js/main.js"></script>
 	</body>
