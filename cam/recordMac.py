@@ -8,7 +8,7 @@ import cv2
 
 
 # ====== Editable settings ======
-# Auto-discover icspring cameras (recommended for Jetson)
+# Auto-discover icspring cameras (recommended for Mac)
 AUTO_DISCOVER = True
 
 # If not auto-discovering, specify camera indices here
@@ -31,90 +31,98 @@ FOURCC = "mp4v"
 INPUT_FOURCC = "MJPG"  # ask webcams for MJPG to reduce USB bandwidth
 
 
-def find_icspring_cameras():
-    """Find cameras with 'icspring' in their name using lsusb."""
+def find_icspring_cameras_mac():
+    """Find icspring cameras on Mac using system_profiler."""
     icspring_devices = []
     try:
-        result = subprocess.run(['lsusb'], capture_output=True, text=True, check=True)
-        lines = result.stdout.strip().split('\n')
+        result = subprocess.run(
+            ['system_profiler', 'SPCameraDataType'],
+            capture_output=True,
+            text=True,
+            check=True
+        )
+        output = result.stdout
         
-        # Look for lines containing "icspring" (case insensitive)
-        for line in lines:
-            if 'icspring' in line.lower():
-                # Extract bus and device numbers: Bus 002 Device 003
-                parts = line.split()
-                if len(parts) >= 6:
-                    bus = parts[1]
-                    device = parts[3].rstrip(':')
-                    icspring_devices.append(f"Bus {bus} Device {device}")
+        # Look for icspring in camera info
+        if 'icspring' in output.lower():
+            lines = output.split('\n')
+            for i, line in enumerate(lines):
+                if 'icspring' in line.lower():
+                    # Extract camera name
+                    if ':' in line:
+                        camera_name = line.split(':')[0].strip()
+                        icspring_devices.append(camera_name)
+                    else:
+                        icspring_devices.append(line.strip())
         
-        print(f"Found {len(icspring_devices)} icspring USB devices via lsusb")
+        print(f"Found {len(icspring_devices)} icspring cameras via system_profiler")
         for dev in icspring_devices:
             print(f"  {dev}")
             
     except (subprocess.CalledProcessError, FileNotFoundError) as e:
-        print(f"lsusb not available ({e}), will fall back to /dev/video* discovery")
+        print(f"system_profiler not available ({e}), will try camera indices directly")
     
     return icspring_devices
 
 
 def try_open_capture(source):
-    """Try to open a camera source with robust fallbacks.
+    """Try to open a camera source on Mac.
 
-    Source can be an int index (e.g., 0) or a string path (e.g., "/dev/video0").
+    Source should be an int index (e.g., 0, 1, 2).
     """
-    # Try V4L2 first
-    cap = cv2.VideoCapture(source, cv2.CAP_V4L2)
+    # Try AVFoundation first (Mac's camera backend)
+    cap = cv2.VideoCapture(source, cv2.CAP_AVFOUNDATION)
     if cap.isOpened():
         return cap
     cap.release()
-
+    
     # Fallback to ANY backend
     cap = cv2.VideoCapture(source, cv2.CAP_ANY)
     if cap.isOpened():
         return cap
     cap.release()
 
-    # If given an int index, also try the device path explicitly
-    if isinstance(source, int):
-        dev = f"/dev/video{source}"
-        cap = cv2.VideoCapture(dev, cv2.CAP_ANY)
-        if cap.isOpened():
-            return cap
-        cap.release()
-
-    # If given a device path, try a simple GStreamer pipeline as last resort
-    if isinstance(source, str) and os.path.exists(source):
-        gst = f"v4l2src device={source} ! videoconvert ! appsink"
-        cap = cv2.VideoCapture(gst, cv2.CAP_GSTREAMER)
-        if cap.isOpened():
-            return cap
-        cap.release()
-
     return cv2.VideoCapture()  # unopened
 
 
-def discover_icspring_cameras(required: int = 3, max_scan: int = 10):
-    """Discover icspring cameras on Jetson, looking for /dev/video* devices."""
+def get_camera_name(cap):
+    """Try to get the camera name/description."""
+    try:
+        # Try to get backend name
+        backend = cap.getBackendName()
+        return backend
+    except:
+        return "Unknown"
+
+
+def discover_icspring_cameras_mac(required: int = 3, max_scan: int = 10):
+    """Discover icspring cameras on Mac by trying camera indices."""
     found = []
     
-    # First, look for icspring cameras via USB
-    icspring_usb_devices = find_icspring_cameras()
-    print(f"Scanning /dev/video* devices (0-{max_scan-1}) for working cameras...")
+    # First, check system_profiler for icspring cameras
+    icspring_info = find_icspring_cameras_mac()
+    print(f"Scanning camera indices (0-{max_scan-1}) for working cameras...")
     
-    # Scan /dev/video* devices
+    # Try opening cameras by index
     for i in range(max_scan):
-        dev = f"/dev/video{i}"
-        if not os.path.exists(dev):
-            continue
-        
-        cap = try_open_capture(dev)
+        cap = try_open_capture(i)
         if cap.isOpened():
+            # Try to read a test frame to ensure it's really working
+            ret, frame = cap.read()
+            if ret and frame is not None:
+                camera_name = get_camera_name(cap)
+                print(f"  Found working camera at index {i}: {camera_name}")
+                cap.release()
+                found.append(i)
+                if len(found) >= required:
+                    break
+            else:
+                cap.release()
+        else:
             cap.release()
-            found.append(dev)
-            print(f"  Found working camera: {dev}")
-            if len(found) >= required:
-                break
+    
+    if len(icspring_info) > 0 and len(found) >= len(icspring_info):
+        print(f"Note: Assuming first {len(icspring_info)} working cameras are icspring cameras")
     
     return found
 
@@ -129,7 +137,7 @@ def record_from_camera(source, output_path: str, duration_seconds: float, start_
             break
         time.sleep(0.1)
     if cap is None or not cap.isOpened():
-        print(f"[{source}] ERROR: Could not open camera after retries.")
+        print(f"[Camera {source}] ERROR: Could not open camera after retries.")
         return
 
     # Try to set basic properties; some cameras might ignore these.
@@ -150,11 +158,11 @@ def record_from_camera(source, output_path: str, duration_seconds: float, start_
     fourcc = cv2.VideoWriter_fourcc(*FOURCC)
     writer = cv2.VideoWriter(output_path, fourcc, fps_for_writer, (actual_width, actual_height))
     if not writer.isOpened():
-        print(f"[{source}] ERROR: Could not open writer for {output_path}.")
+        print(f"[Camera {source}] ERROR: Could not open writer for {output_path}.")
         cap.release()
         return
 
-    print(f"[{source}] Recording {os.path.basename(output_path)} at {actual_width}x{actual_height}@{fps_for_writer:.1f}fps")
+    print(f"[Camera {source}] Recording {os.path.basename(output_path)} at {actual_width}x{actual_height}@{fps_for_writer:.1f}fps")
 
     # Synchronize start across all cameras
     start_barrier.wait()
@@ -179,21 +187,21 @@ def record_from_camera(source, output_path: str, duration_seconds: float, start_
     finally:
         writer.release()
         cap.release()
-        print(f"[{source}] Done.")
+        print(f"[Camera {source}] Done.")
 
 
 def main() -> None:
-    print("Running on: Jetson (Linux)")
+    print("Running on: macOS")
     
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
     # Build list of sources
     if AUTO_DISCOVER:
-        sources = discover_icspring_cameras(required=3, max_scan=10)
+        sources = discover_icspring_cameras_mac(required=3, max_scan=10)
         if len(sources) < 3:
-            print("WARNING: Fewer than 3 icspring cameras discovered; proceeding with available.")
+            print("WARNING: Fewer than 3 cameras discovered; proceeding with available.")
     else:
-        sources = [f"/dev/video{i}" for i in CAMERA_INDICES if os.path.exists(f"/dev/video{i}")]
+        sources = CAMERA_INDICES[:3]
         print(f"Using manual camera indices: {sources}")
 
     # Align sources with desired output filenames (first 3 entries)
@@ -236,3 +244,4 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+

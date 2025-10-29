@@ -2,11 +2,12 @@
 import os, json, glob
 import re
 # --- Default settings (edit here for project-wide defaults) ---
-DEFAULT_MIN_AREA = 50
-DEFAULT_CLOSE_KERNEL = 5
-DEFAULT_REPROJ_THRESH = 4.0
-DEFAULT_PAIRWISE_REPROJ_THRESH = None  # None means use DEFAULT_REPROJ_THRESH
-DEFAULT_MIN_BASELINE_DEG = 1.5  # reject frames with too little parallax
+# Real camera defaults - tuned for robustness
+DEFAULT_MIN_AREA = 20   # allow small blobs (e.g., cursor) while filtering noise
+DEFAULT_CLOSE_KERNEL = 7  # stronger closing for real camera noise
+DEFAULT_REPROJ_THRESH = 25.0  # more lenient threshold for real camera data
+DEFAULT_PAIRWISE_REPROJ_THRESH = 25.0  # same for pairwise fallback
+DEFAULT_MIN_BASELINE_DEG = 0.5  # lower threshold for real cameras (often closer together)
 DEFAULT_LOG_STATS = True
 DEFAULT_VERBOSE = True
 
@@ -112,13 +113,14 @@ def project_point(cam, width: int, height: int, P_world: np.ndarray):
     return float(px), float(py)
 
 
-def reprojection_error(cams, width: int, height: int, centroids, P_world: np.ndarray):
-    # Returns RMS pixel error across available centroids
+def reprojection_error(cams, dims_list, centroids, P_world: np.ndarray):
+    # Returns RMS pixel error across available centroids, using per-camera dimensions
     errs = []
-    for cam, c in zip(cams, centroids):
+    for idx, (cam, c) in enumerate(zip(cams, centroids)):
         if c is None:
             continue
-        pp = project_point(cam, width, height, P_world)
+        w, h = dims_list[idx]
+        pp = project_point(cam, w, h, P_world)
         if pp is None:
             return float("inf")
         ex = pp[0] - c[0]
@@ -154,6 +156,7 @@ def reconstruct_from_masks(mask_folders, config_path, out_path: Path, select_nam
                           close_kernel: int = DEFAULT_CLOSE_KERNEL,
                           reproj_thresh_px: float = DEFAULT_REPROJ_THRESH,
                           pairwise_reproj_thresh_px: float = DEFAULT_PAIRWISE_REPROJ_THRESH,
+                          min_baseline_deg: float = DEFAULT_MIN_BASELINE_DEG,
                           log_stats: bool = DEFAULT_LOG_STATS,
                           verbose: bool = DEFAULT_VERBOSE):
     out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -188,27 +191,28 @@ def reconstruct_from_masks(mask_folders, config_path, out_path: Path, select_nam
     last_pct = -1
     for i in range(min_len):
         centroids = []
-        dims = None
+        dims_list = []
+        rejected_reason = None
         for k in range(3):
             m = cv2.imread(mask_paths[k][i], cv2.IMREAD_GRAYSCALE)
             if m is None:
                 centroids.append(None)
+                dims_list.append((0, 0))
                 continue
-            if dims is None:
-                dims = (m.shape[1], m.shape[0])
+            dims_list.append((m.shape[1], m.shape[0]))
             # robust centroid from largest connected component (tunable)
             c = largest_component_centroid(m, min_area=int(min_area), close_kernel=int(close_kernel))
             centroids.append(c)
         if any(c is None for c in centroids):
             n_missing += 1
-            if verbose and (i % max(1, n_frames // 10) == 0):
+            if verbose:
                 print(f"[debug] frame {i}: missing centroid(s) {centroids}")
             continue
-        width, height = dims
         rays = []
         for k in range(3):
             px, py = centroids[k]
-            d = pixel_ray(cams[k], width, height, px, py)
+            w, h = dims_list[k]
+            d = pixel_ray(cams[k], w, h, px, py)
             rays.append(d)
         # Baseline gating: ensure sufficient pairwise ray angles (parallax)
         def _angle_deg(u, v):
@@ -218,10 +222,10 @@ def reconstruct_from_masks(mask_folders, config_path, out_path: Path, select_nam
         a01 = _angle_deg(rays[0], rays[1])
         a02 = _angle_deg(rays[0], rays[2])
         a12 = _angle_deg(rays[1], rays[2])
-        min_base_req = float(DEFAULT_MIN_BASELINE_DEG)
+        min_base_req = float(min_baseline_deg)
         if (a01 < min_base_req) or (a02 < min_base_req) or (a12 < min_base_req):
             n_rejected += 1
-            if verbose and (i % max(1, n_frames // 10) == 0):
+            if verbose:
                 print(f"[debug] frame {i}: baseline too small (deg) a01={a01:.2f}, a02={a02:.2f}, a12={a12:.2f}")
             continue
         # log baseline angles if requested
@@ -237,7 +241,7 @@ def reconstruct_from_masks(mask_folders, config_path, out_path: Path, select_nam
         # Reprojection gating
         accept = False
         if P is not None:
-            err = reprojection_error(cams, width, height, centroids, P)
+            err = reprojection_error(cams, dims_list, centroids, P)
             if log_stats:
                 rms_stats.append(err)
             if err <= float(reproj_thresh_px):  # pixels
@@ -252,7 +256,7 @@ def reconstruct_from_masks(mask_folders, config_path, out_path: Path, select_nam
                 if P2 is None:
                     continue
                 # compute error using only the two cameras contributing
-                e2 = reprojection_error([cams[a], cams[b]], width, height, [centroids[a], centroids[b]], P2)
+                e2 = reprojection_error([cams[a], cams[b]], [dims_list[a], dims_list[b]], [centroids[a], centroids[b]], P2)
                 if e2 < best_err:
                     best_err = e2
                     best_P = P2
@@ -263,7 +267,7 @@ def reconstruct_from_masks(mask_folders, config_path, out_path: Path, select_nam
                 accept = True
         if not accept:
             n_rejected += 1
-            if verbose and (i % max(1, n_frames // 10) == 0):
+            if verbose:
                 print(f"[debug] frame {i}: reprojection err too high ({err if 'err' in locals() else 'n/a'}), best_pair={best_err if 'best_err' in locals() else 'n/a'}")
             continue
         if log_stats:
@@ -288,6 +292,8 @@ def reconstruct_from_masks(mask_folders, config_path, out_path: Path, select_nam
     print(f"[ok] Wrote {out_json} with {len(track)} points")
     if verbose:
         print(f"[debug] frames: {n_frames}, missing: {n_missing}, rejected: {n_rejected}, accepted: {len(track)}")
+        if len(track) == 0:
+            print("[hint] No accepted frames. Common causes: (1) missing centroids due to mask thresholds/areas, (2) too small baseline (adjust DEFAULT_MIN_BASELINE_DEG), (3) high reprojection error (adjust thresholds), or camera config mismatch.")
     if log_stats and angle_stats:
         A = np.array(angle_stats, dtype=np.float64)
         rms = np.array(rms_stats, dtype=np.float64)
@@ -350,6 +356,7 @@ def reconstruct_scene(scene: str, mask_root: Path, config_path: Path, out_root: 
                       close_kernel: int = DEFAULT_CLOSE_KERNEL,
                       reproj_thresh_px: float = DEFAULT_REPROJ_THRESH,
                       pairwise_reproj_thresh_px: float = DEFAULT_PAIRWISE_REPROJ_THRESH,
+                      min_baseline_deg: float = DEFAULT_MIN_BASELINE_DEG,
                       log_stats: bool = DEFAULT_LOG_STATS,
                       verbose: bool = DEFAULT_VERBOSE):
     print(f"[info] Reconstructing scene '{scene}'")
@@ -361,7 +368,11 @@ def reconstruct_scene(scene: str, mask_root: Path, config_path: Path, out_root: 
         if m:
             setup_num = int(m.group(1))
     select_names = None
-    if setup_num in (1, 2, 3, 4):
+    scene_lower = (scene or "").lower()
+    if scene_lower.startswith("test1"):
+        select_names = [f"test1_{i}" for i in (1, 2, 3)]
+        print(f"[info] Selecting cameras: {select_names}")
+    elif setup_num in (1, 2, 3, 4):
         select_names = [f"setup{setup_num}_{i}" for i in (1, 2, 3)]
         print(f"[info] Selecting cameras: {select_names}")
     # Adaptive defaults for setup 2 if user didn't override (stricter + more robust)
@@ -375,6 +386,7 @@ def reconstruct_scene(scene: str, mask_root: Path, config_path: Path, out_root: 
     return reconstruct_from_masks(mask_folders, config_path, out_path, select_names=select_names,
                                   min_area=min_area, close_kernel=close_kernel,
                                   reproj_thresh_px=reproj_thresh_px, pairwise_reproj_thresh_px=pairwise_reproj_thresh_px,
+                                  min_baseline_deg=min_baseline_deg,
                                   log_stats=log_stats, verbose=verbose)
 
 
@@ -390,6 +402,7 @@ def main():
     ap.add_argument("--reproj-thresh", type=float, default=DEFAULT_REPROJ_THRESH, help="Reprojection error threshold in pixels (triple)")
     ap.add_argument("--pairwise-reproj-thresh", type=float, default=DEFAULT_PAIRWISE_REPROJ_THRESH, help="Reprojection threshold for pairwise fallback (defaults to triple)")
     ap.add_argument("--log-stats", action="store_true", default=DEFAULT_LOG_STATS, help="Print baseline angle and RMS reprojection stats")
+    ap.add_argument("--min-baseline-deg", type=float, default=DEFAULT_MIN_BASELINE_DEG, help="Minimum pairwise ray angle (degrees) to accept a frame")
     ap.add_argument("--verbose", action="store_true", default=DEFAULT_VERBOSE, help="Log per-frame rejection/missing diagnostics")
     args = ap.parse_args()
 
@@ -403,7 +416,12 @@ def main():
         out_dir = Path(args.out)
         print("[info] Reconstructing from explicit mask folders")
         # If config has more than 3 cameras, no selection is applied here; pass select_names=None
-        reconstruct_from_masks(mask_folders, config_path, out_dir, select_names=None)
+        reconstruct_from_masks(mask_folders, config_path, out_dir, select_names=None,
+                               min_area=int(args.min_area), close_kernel=int(args.close_kernel),
+                               reproj_thresh_px=float(args.reproj_thresh),
+                               pairwise_reproj_thresh_px=(float(args.pairwise_reproj_thresh) if args.pairwise_reproj_thresh is not None else None),
+                               min_baseline_deg=float(args.min_baseline_deg),
+                               log_stats=bool(args.log_stats), verbose=bool(args.verbose))
         return
 
     if not args.scene:
@@ -415,6 +433,7 @@ def main():
                       min_area=int(args.min_area), close_kernel=int(args.close_kernel),
                       reproj_thresh_px=float(args.reproj_thresh),
                       pairwise_reproj_thresh_px=(float(args.pairwise_reproj_thresh) if args.pairwise_reproj_thresh is not None else None),
+                      min_baseline_deg=float(args.min_baseline_deg),
                       log_stats=bool(args.log_stats), verbose=bool(args.verbose))
 
 

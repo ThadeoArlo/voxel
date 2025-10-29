@@ -14,14 +14,22 @@ INPUT_VIDEOS = []
 OUTPUT_SUBDIR_DEFAULT = "output"  # used only when no --scene provided
 STRIDE = 1
 THRESHOLD = 20  # lower default to be sensitive to small objects
-BLUR = 3
-ERODE_ITERS = 0
-DILATE_ITERS = 0
 DOWNSCALE = 1.0
 WRITE_OVERLAY = True
 BG_ALPHA = 0.02  # running average background update rate (0..1)
-CLOSE_KERNEL = 5  # morphological closing kernel (odd); 0 to disable
 KEEP_LARGEST = True  # keep only the largest connected component per frame
+
+# Real camera defaults - tuned for motion detection over brightness/color changes
+MOTION_MODE = "flow"  # Use optical flow for real camera data to ignore brightness/color changes
+BLUR = 5          # stronger blur for real camera noise reduction
+CLOSE_KERNEL = 7  # morphological closing kernel for real camera noise
+ERODE_ITERS = 1   # erosion to clean small specks
+DILATE_ITERS = 2  # dilation to fill gaps in motion blobs
+
+# Optical flow thresholds (used when MOTION_MODE == "flow")
+FLOW_MAG_THRESH = 0.8  # absolute min magnitude in px/frame
+FLOW_PCT = 97.0        # percentile fallback for threshold (0-100)
+FLOW_MAD_K = 3.0       # median + k * MAD for robust thresholding
 
 def ensure_dir(p: Path):
     p.mkdir(parents=True, exist_ok=True)
@@ -42,6 +50,10 @@ def process_video(
     dilate_iter: int = 2,
     downscale: float = 1.0,
     write_overlay: bool = True,
+    motion_mode: str = "bg",
+    flow_mag_thresh: float = None,
+    flow_pct: float = None,
+    flow_mad_k: float = None,
 ):
     cap = cv2.VideoCapture(input_path)
     if not cap.isOpened():
@@ -109,21 +121,38 @@ def process_video(
         # Save frame for reference
         cv2.imwrite(str(frames_dir / f"frame_{idx_kept:06d}.png"), frame)
 
-        # Initialize background on first kept frame
+        # Initialize state on first kept frame
+        if prev_gray is None:
+            prev_gray = gray
         if bg_f32 is None:
             bg_f32 = gray.astype(np.float32)
-            prev_gray = gray
             idx_kept += 1
             continue
 
-        # Background subtraction (running average) to avoid double-lobes from prev-frame differencing
-        gray_f32 = gray.astype(np.float32)
-        diff = cv2.absdiff(gray_f32, bg_f32)
-        # Threshold (fixed or Otsu if thresh<=0)
-        if thresh is not None and thresh > 0:
-            _, mask = cv2.threshold(diff.astype(np.uint8), int(thresh), 255, cv2.THRESH_BINARY)
+        # Motion mask depending on selected mode
+        if (motion_mode or "bg").lower() == "flow":
+            # Dense optical flow (Farnebäck) for illumination-invariant motion
+            flow = cv2.calcOpticalFlowFarneback(
+                prev_gray, gray, None,
+                0.5, 3, 15, 3, 5, 1.2, 0
+            )
+            mag, _ang = cv2.cartToPolar(flow[..., 0], flow[..., 1])
+            med = float(np.median(mag))
+            mad = float(np.median(np.abs(mag - med)))
+            robust_thr = med + (flow_mad_k if flow_mad_k is not None else FLOW_MAD_K) * (1.4826 * mad)
+            pct_thr = float(np.percentile(mag, (flow_pct if flow_pct is not None else FLOW_PCT)))
+            abs_thr = (flow_mag_thresh if flow_mag_thresh is not None else FLOW_MAG_THRESH)
+            thr = max(abs_thr, robust_thr, pct_thr)
+            mask = (mag > thr).astype(np.uint8) * 255
         else:
-            _, mask = cv2.threshold(diff.astype(np.uint8), 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+            # Background subtraction (running average) to avoid double-lobes from prev-frame differencing
+            gray_f32 = gray.astype(np.float32)
+            diff = cv2.absdiff(gray_f32, bg_f32)
+            # Threshold (fixed or Otsu if thresh<=0)
+            if thresh is not None and thresh > 0:
+                _, mask = cv2.threshold(diff.astype(np.uint8), int(thresh), 255, cv2.THRESH_BINARY)
+            else:
+                _, mask = cv2.threshold(diff.astype(np.uint8), 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
 
         # Morphological closing to merge leading/trailing lobes into one solid blob
         if CLOSE_KERNEL and CLOSE_KERNEL > 1:
@@ -171,8 +200,10 @@ def process_video(
         mask_bgr = cv2.cvtColor(mask, cv2.COLOR_GRAY2BGR)
         mask_writer.write(mask_bgr)
 
-        # Update the running background
-        cv2.accumulateWeighted(gray_f32, bg_f32, BG_ALPHA)
+        # Update the running background (only used in bg mode)
+        if (motion_mode or "bg").lower() == "bg":
+            gray_f32 = gray.astype(np.float32)
+            cv2.accumulateWeighted(gray_f32, bg_f32, BG_ALPHA)
         prev_gray = gray
         idx_kept += 1
 
@@ -206,6 +237,10 @@ def main():
     ap.add_argument("--close", type=int, help="Morphological closing kernel (odd); 0 to disable", default=None)
     ap.add_argument("--largest-only", action="store_true", help="Keep only largest connected component")
     ap.add_argument("--no-largest-only", action="store_true", help="Disable largest component filtering")
+    ap.add_argument("--motion-mode", choices=["bg", "flow"], help="Motion extraction: bg (default) or flow", default=None)
+    ap.add_argument("--flow-mag", type=float, help="Absolute min flow magnitude (px/frame)", default=None)
+    ap.add_argument("--flow-pct", type=float, help="Percentile for flow threshold (0-100)", default=None)
+    ap.add_argument("--flow-mad-k", type=float, help="k for median+ k*MAD robust flow threshold", default=None)
     args = ap.parse_args()
 
     mask_dir = Path(__file__).resolve().parent
@@ -252,6 +287,10 @@ def main():
             dilate_iter=max(0, int(args.dilate if args.dilate is not None else DILATE_ITERS)),
             downscale=float(args.downscale if args.downscale is not None else DOWNSCALE),
             write_overlay=(False if args.no_overlay else WRITE_OVERLAY),
+            motion_mode=(args.motion_mode if args.motion_mode is not None else MOTION_MODE),
+            flow_mag_thresh=(float(args.flow_mag) if args.flow_mag is not None else None),
+            flow_pct=(float(args.flow_pct) if args.flow_pct is not None else None),
+            flow_mad_k=(float(args.flow_mad_k) if args.flow_mad_k is not None else None),
         )
 
 
