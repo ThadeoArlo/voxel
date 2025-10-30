@@ -26,47 +26,21 @@
 			<div id="hudBody" class="hud-body">
 				Load track JSONs
 				<input id="file" type="file" accept="application/json" multiple />
-				<div style="margin-top: 8px; font-size: 12px; color: #bbb">
-					Scenario:
-				</div>
-				<select id="scenario">
-					<option value="straight">A - Straight path</option>
-					<option value="curved">B - Curved path</option>
-					<option value="curved3">C - 3 objects (curved)</option>
-				</select>
-				<label
-					id="includeSimRow"
-					style="display: none; margin-top: 6px; font-size: 12px; color: #bbb"
-				>
-					<input id="includeSim" type="checkbox" /> Include simulation
-				</label>
 				<label
 					id="pathsRow"
 					style="margin-top: 6px; font-size: 12px; color: #bbb"
 				>
-					<input id="showPaths" type="checkbox" /> Show flight paths
+					<input id="showPaths" type="checkbox" checked /> Show track paths
 				</label>
-				<button id="start">Start flight</button>
+				<button id="start">Play tracks</button>
 				<div
 					id="simControls"
 					style="display: flex; align-items: center; gap: 8px; margin-top: 6px"
 				>
-					<label style="font-size: 12px; color: #bbb">Flight progress</label>
-					<input
-						id="simProgress"
-						type="range"
-						min="0"
-						max="100"
-						step="0.1"
-						style="display: none"
-					/>
 					<button id="stop">Pause</button>
 				</div>
 				<div id="trackList" style="margin-top: 10px; font-size: 12px"></div>
 				<div id="legend">
-					<div class="legend-row">
-						<span class="swatch" style="background: #ff5555"></span> Simulation
-					</div>
 					<div class="legend-row">
 						<span class="swatch" style="background: #55ffcc"></span>
 						Reconstruction

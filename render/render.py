@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
 import os, json, glob
-import re
 # --- Default settings (edit here for project-wide defaults) ---
 # Real camera defaults - tuned for robustness
 DEFAULT_MIN_AREA = 20   # allow small blobs (e.g., cursor) while filtering noise
@@ -162,12 +161,24 @@ def reconstruct_from_masks(mask_folders, config_path, out_path: Path, select_nam
     out_path.parent.mkdir(parents=True, exist_ok=True)
     print(f"[info] Using camera config: {config_path}")
     all_cams = load_cam_config(str(config_path))
-    if select_names is not None:
-        cams = select_cams_by_names(all_cams, select_names)
+    chosen_names = select_names
+    if chosen_names is None:
+        test1_candidates = []
+        for cam in all_cams:
+            name = str(cam.get("name") or "").lower()
+            if name.startswith("test1_"):
+                test1_candidates.append(cam.get("name"))
+        test1_candidates.sort()
+        if len(test1_candidates) >= 3:
+            chosen_names = test1_candidates[:3]
+            print(f"[info] Selecting cameras: {chosen_names}")
+    if chosen_names is not None:
+        cams = select_cams_by_names(all_cams, chosen_names)
     else:
-        if len(all_cams) != 3:
-            raise SystemExit("Need exactly 3 cameras in config or provide select_names")
-        cams = all_cams
+        if len(all_cams) < 3:
+            raise SystemExit("Config must contain at least three cameras")
+        cams = all_cams[:3]
+        print("[warn] Using first three cameras from config (test1_* not found)")
 
     print("[info] Mask folders:")
     for idx, mf in enumerate(mask_folders):
@@ -361,33 +372,52 @@ def reconstruct_scene(scene: str, mask_root: Path, config_path: Path, out_root: 
                       verbose: bool = DEFAULT_VERBOSE):
     print(f"[info] Reconstructing scene '{scene}'")
     mask_folders = find_mask_folders_for_scene(scene, mask_root)
-    # Derive setup number from scene like 'A1', 'B2', or 'A1_1' (use first digit)
-    setup_num = None
-    if scene:
-        m = re.search(r"(\d)", scene)
-        if m:
-            setup_num = int(m.group(1))
-    select_names = None
     scene_lower = (scene or "").lower()
-    if scene_lower.startswith("test1"):
-        select_names = [f"test1_{i}" for i in (1, 2, 3)]
-        print(f"[info] Selecting cameras: {select_names}")
-    elif setup_num in (1, 2, 3, 4):
-        select_names = [f"setup{setup_num}_{i}" for i in (1, 2, 3)]
-        print(f"[info] Selecting cameras: {select_names}")
-    # Adaptive defaults for setup 2 if user didn't override (stricter + more robust)
-    if setup_num == 2 and (min_area == DEFAULT_MIN_AREA and close_kernel == DEFAULT_CLOSE_KERNEL and abs(reproj_thresh_px - DEFAULT_REPROJ_THRESH) < 1e-6):
-        print("[info] Setup 2 detected; using adaptive defaults: --min-area 140 --close-kernel 7 --reproj-thresh 6.0 --pairwise-reproj-thresh 5.0")
-        min_area = 140
-        close_kernel = 7
-        reproj_thresh_px = 6.0
-        pairwise_reproj_thresh_px = 5.0
+    select_names = [f"test1_{i}" for i in (1, 2, 3)] if scene_lower.startswith("test1") else None
     out_path = out_root / f"{scene}.json"
     return reconstruct_from_masks(mask_folders, config_path, out_path, select_names=select_names,
                                   min_area=min_area, close_kernel=close_kernel,
                                   reproj_thresh_px=reproj_thresh_px, pairwise_reproj_thresh_px=pairwise_reproj_thresh_px,
                                   min_baseline_deg=min_baseline_deg,
                                   log_stats=log_stats, verbose=verbose)
+
+
+def _discover_scenes_under_mask_root(mask_root: Path):
+    # Auto-discover scenes under mask/output by grouping subfolders by trailing POV digit 1/2/3
+    if not mask_root.exists() or not mask_root.is_dir():
+        return {}
+    subs = [p for p in mask_root.iterdir() if p.is_dir()]
+    groups = {}
+    def norm_mask_dir(p: Path):
+        m = p / 'masks'
+        return m if m.exists() and m.is_dir() else p
+    for p in subs:
+        name = p.name.strip()
+        pov = None
+        base = name
+        for ch in reversed(name):
+            if ch in '123':
+                pov = ch
+                base = name[:-1].rstrip()
+                break
+        key = base or name
+        entry = groups.setdefault(key, {})
+        if pov in (None, '1', '2', '3'):
+            entry[pov or '*'] = norm_mask_dir(p)
+    scenes = {}
+    for base, mp in groups.items():
+        if all(d in mp for d in ('1','2','3')):
+            scenes[base or 'scene'] = [mp['1'], mp['2'], mp['3']]
+    # Fallback: if nothing matched, try first 3 mask folders directly
+    if not scenes:
+        candidates = []
+        for p in sorted(subs):
+            m = norm_mask_dir(p)
+            if m.exists() and m.is_dir():
+                candidates.append(m)
+        if len(candidates) >= 3:
+            scenes['default'] = candidates[:3]
+    return scenes
 
 
 def main():
@@ -424,11 +454,29 @@ def main():
                                log_stats=bool(args.log_stats), verbose=bool(args.verbose))
         return
 
-    if not args.scene:
-        raise SystemExit("Provide --scene or --masks")
-
+    # Auto mode: no scene or masks provided -> scan mask/output and process all discovered scenes
     mask_root = Path(args.mask_root)
     out_root = Path(args.out)
+    if not args.scene:
+        scenes = _discover_scenes_under_mask_root(mask_root)
+        if not scenes:
+            raise SystemExit(f"No scenes discovered under {mask_root}. Ensure mask outputs exist.")
+        print(f"[info] Auto-discovered {len(scenes)} scene(s) under {mask_root}")
+        for scene, folders in scenes.items():
+            print(f"[info] Scene '{scene}':")
+            for i, f in enumerate(folders):
+                print(f"  cam{i}: {f}")
+            out_path = reconstruct_from_masks(
+                folders, config_path, out_root / f"{scene}.json", select_names=None,
+                min_area=int(args.min_area), close_kernel=int(args.close_kernel),
+                reproj_thresh_px=float(args.reproj_thresh),
+                pairwise_reproj_thresh_px=(float(args.pairwise_reproj_thresh) if args.pairwise_reproj_thresh is not None else None),
+                min_baseline_deg=float(args.min_baseline_deg),
+                log_stats=bool(args.log_stats), verbose=bool(args.verbose)
+            )
+        return
+
+    # Scene provided -> normal path
     reconstruct_scene(args.scene, mask_root, config_path, out_root,
                       min_area=int(args.min_area), close_kernel=int(args.close_kernel),
                       reproj_thresh_px=float(args.reproj_thresh),

@@ -4,56 +4,102 @@ import cv2
 import argparse
 import numpy as np
 from pathlib import Path
+import csv
 
 # ============================
-# Defaults (can be overridden via CLI)
+# Defaults (overridable via CLI)
 # ============================
-# If neither --input nor --scene are provided, these are used as a fallback.
-# Prefer using --scene <name> to process all videos in src/<name>.
-INPUT_VIDEOS = []
-OUTPUT_SUBDIR_DEFAULT = "output"  # used only when no --scene provided
 STRIDE = 1
-THRESHOLD = 20  # lower default to be sensitive to small objects
 DOWNSCALE = 1.0
 WRITE_OVERLAY = True
-BG_ALPHA = 0.02  # running average background update rate (0..1)
-KEEP_LARGEST = True  # keep only the largest connected component per frame
+BLUR = 5
 
-# Real camera defaults - tuned for motion detection over brightness/color changes
-MOTION_MODE = "flow"  # Use optical flow for real camera data to ignore brightness/color changes
-BLUR = 5          # stronger blur for real camera noise reduction
-CLOSE_KERNEL = 7  # morphological closing kernel for real camera noise
-ERODE_ITERS = 1   # erosion to clean small specks
-DILATE_ITERS = 2  # dilation to fill gaps in motion blobs
+# Background subtractor (MOG2) params tuned for small movers in sky scenes
+MOG2_HISTORY = 300          # frames kept in model
+MOG2_VAR_THRESH = 16.0      # sensitivity; lower -> more sensitive
+MOG2_DETECT_SHADOWS = False # we want pure binary
 
-# Optical flow thresholds (used when MOTION_MODE == "flow")
-FLOW_MAG_THRESH = 0.8  # absolute min magnitude in px/frame
-FLOW_PCT = 97.0        # percentile fallback for threshold (0-100)
-FLOW_MAD_K = 3.0       # median + k * MAD for robust thresholding
+# Morphology / filtering
+OPEN_KERNEL = 3             # noise cleanup; 0 disables
+CLOSE_KERNEL = 5            # merge small gaps
+ERODE_ITERS = 0
+DILATE_ITERS = 2
+MIN_COMPONENT_AREA = 25     # keep tiny dots (tune as needed)
+KEEP_LARGEST = True         # for now, track one object
+
+# Learning rate: 0 < lr <= 1, or -1 for auto (OpenCV chooses 1/history)
+LEARNING_RATE = -1
+
+# Output root
+OUTPUT_SUBDIR_DEFAULT = "output"  # under mask/
+THRESH_POST = 1                   # hard floor after MOG2 to ensure [0/255]
+
+# Try CUDA path on Jetson if available
+def make_bg_subtractor_cuda():
+    try:
+        if not hasattr(cv2, "cuda"):
+            return None
+        # Some OpenCV builds on Jetson include CUDA MOG2
+        return cv2.cuda.createBackgroundSubtractorMOG2(
+            history=MOG2_HISTORY,
+            varThreshold=MOG2_VAR_THRESH,
+            detectShadows=MOG2_DETECT_SHADOWS
+        )
+    except Exception:
+        return None
 
 def ensure_dir(p: Path):
     p.mkdir(parents=True, exist_ok=True)
 
-
-def write_video_init(path: Path, width: int, height: int, fps: float):
+def write_video_init(path: Path, width: int, height: int, fps: float, is_color=True):
     fourcc = cv2.VideoWriter_fourcc(*"mp4v")
-    return cv2.VideoWriter(str(path), fourcc, max(1.0, fps), (width, height), True)
+    return cv2.VideoWriter(str(path), fourcc, max(1.0, fps), (width, height), is_color)
 
+def morphology(mask: np.ndarray,
+               open_k: int,
+               close_k: int,
+               erode_iters: int,
+               dilate_iters: int) -> np.ndarray:
+    out = mask
+    if open_k and open_k > 1:
+        k = open_k + (open_k % 2 == 0)
+        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (k, k))
+        out = cv2.morphologyEx(out, cv2.MORPH_OPEN, kernel)
+    if close_k and close_k > 1:
+        k = close_k + (close_k % 2 == 0)
+        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (k, k))
+        out = cv2.morphologyEx(out, cv2.MORPH_CLOSE, kernel)
+    if erode_iters > 0:
+        out = cv2.erode(out, None, iterations=erode_iters)
+    if dilate_iters > 0:
+        out = cv2.dilate(out, None, iterations=dilate_iters)
+    return out
+
+def to_gray_blur(frame: np.ndarray, blur: int) -> np.ndarray:
+    g = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+    if blur and blur > 0:
+        k = blur + (blur % 2 == 0)
+        g = cv2.GaussianBlur(g, (k, k), 0)
+    return g
 
 def process_video(
     input_path: str,
     out_root: Path,
     stride: int = 1,
-    thresh: int = 25,
-    blur: int = 3,
-    erode_iter: int = 1,
-    dilate_iter: int = 2,
     downscale: float = 1.0,
     write_overlay: bool = True,
-    motion_mode: str = "bg",
-    flow_mag_thresh: float = None,
-    flow_pct: float = None,
-    flow_mad_k: float = None,
+    blur: int = 5,
+    open_kernel: int = 3,
+    close_kernel: int = 5,
+    erode_iter: int = 0,
+    dilate_iter: int = 2,
+    min_component_area: int = 25,
+    keep_largest: bool = True,
+    mog2_history: int = 300,
+    mog2_var: float = 16.0,
+    mog2_shadows: bool = False,
+    learning_rate: float = -1.0,
+    quality_log_path: Path = None
 ):
     cap = cv2.VideoCapture(input_path)
     if not cap.isOpened():
@@ -61,6 +107,10 @@ def process_video(
 
     total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT)) or 0
     fps = float(cap.get(cv2.CAP_PROP_FPS) or 30.0)
+    w0 = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+    h0 = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    width = int(w0 * downscale) if downscale != 1.0 else w0
+    height = int(h0 * downscale) if downscale != 1.0 else h0
 
     base = Path(input_path).stem
     out_dir = out_root / base
@@ -69,210 +119,178 @@ def process_video(
     ensure_dir(frames_dir)
     ensure_dir(masks_dir)
 
-    prev_gray = None
-    bg_f32 = None  # running background model (float32)
-    idx_in = -1
-    idx_kept = 0
-
-    writer = None
-    mask_writer = None
     overlay_path = out_dir / "motion_overlay.mp4"
     mask_video_path = out_dir / "motion_mask.mp4"
+    writer = write_overlay and write_video_init(overlay_path, width, height, fps)
+    mask_writer = write_video_init(mask_video_path, width, height, fps, is_color=True)
+
+    # Quality CSV (optional)
+    qfp = None
+    qwriter = None
+    if quality_log_path:
+        ensure_dir(quality_log_path.parent)
+        qfp = open(quality_log_path, "w", newline="")
+        qwriter = csv.writer(qfp)
+        qwriter.writerow(["frame","mask_area","num_components","largest_area","bbox_x","bbox_y","bbox_w","bbox_h"])
+
+    # Choose CUDA subtractor if possible, else CPU
+    cuda_sub = make_bg_subtractor_cuda()
+    if cuda_sub is None:
+        mog2 = cv2.createBackgroundSubtractorMOG2(
+            history=mog2_history,
+            varThreshold=mog2_var,
+            detectShadows=mog2_shadows
+        )
+    else:
+        mog2 = None  # using CUDA path
+
+    idx_in = -1
+    idx_kept = 0
+    last_pct = -1
 
     while True:
-        ok, frame = cap.read()
+        ok, frame_bgr = cap.read()
         if not ok:
             break
         idx_in += 1
         if stride > 1 and (idx_in % stride) != 0:
             continue
 
-        # Progress logging (~every 5%) based on input frame index
+        if downscale != 1.0:
+            frame_bgr = cv2.resize(frame_bgr, (width, height), interpolation=cv2.INTER_AREA)
+
+        gray = to_gray_blur(frame_bgr, blur)
+
+        # Background subtraction → raw foreground mask
+        if cuda_sub is not None:
+            # Upload to GPU
+            g_gpu = cv2.cuda_GpuMat()
+            g_gpu.upload(gray)
+            fg_gpu = cuda_sub.apply(g_gpu, learningRate=learning_rate)
+            mask_raw = fg_gpu.download()
+        else:
+            mask_raw = mog2.apply(gray, learningRate=learning_rate)
+
+        # Enforce binary (remove any shadow codes)
+        _, mask_bin = cv2.threshold(mask_raw, THRESH_POST, 255, cv2.THRESH_BINARY)
+
+        # Morphology to stabilize dot
+        mask_bin = morphology(mask_bin, open_kernel, close_kernel, erode_iter, dilate_iter)
+
+        # Keep only the largest blob (single target for now) or filter by min area
+        contours, _ = cv2.findContours(mask_bin, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        mask_final = np.zeros_like(mask_bin)
+        largest_area = 0
+        bbox = (0,0,0,0)
+        if contours:
+            if keep_largest:
+                best = max(contours, key=cv2.contourArea)
+                largest_area = float(cv2.contourArea(best))
+                if largest_area >= max(1, min_component_area):
+                    cv2.drawContours(mask_final, [best], -1, 255, thickness=cv2.FILLED)
+                    x,y,w,h = cv2.boundingRect(best)
+                    bbox = (x,y,w,h)
+                    if write_overlay:
+                        cv2.rectangle(frame_bgr, (x,y), (x+w,y+h), (0,255,0), 2)
+            else:
+                # keep all blobs above min area
+                kept = []
+                for c in contours:
+                    a = cv2.contourArea(c)
+                    if a >= max(1, min_component_area):
+                        kept.append(c)
+                        largest_area = max(largest_area, float(a))
+                if kept:
+                    cv2.drawContours(mask_final, kept, -1, 255, thickness=cv2.FILLED)
+                    if write_overlay:
+                        for c in kept:
+                            x,y,w,h = cv2.boundingRect(c)
+                            cv2.rectangle(frame_bgr, (x,y), (x+w,y+h), (0,255,0), 1)
+
+        # Write per-frame artifacts
+        cv2.imwrite(str(frames_dir / f"frame_{idx_kept:06d}.png"), frame_bgr)
+        cv2.imwrite(str(masks_dir / f"mask_{idx_kept:06d}.png"), mask_final)
+
+        # Write videos
+        mask_writer.write(cv2.cvtColor(mask_final, cv2.COLOR_GRAY2BGR))
+        if write_overlay:
+            writer.write(frame_bgr)
+
+        # Quality CSV row
+        if qwriter is not None:
+            mask_area = int(cv2.countNonZero(mask_final))
+            qwriter.writerow([idx_kept, mask_area, len(contours), int(largest_area), *bbox])
+
+        # Progress (~every 5%)
         if total > 0:
             pct = int(((idx_in + 1) * 100) / total)
-            # print only at 0,5,10,...,100
-            if pct % 5 == 0:
-                # avoid spamming the same percentage
-                # store last printed pct on the out_dir marker file
-                marker = out_dir / ".last_pct"
-                last = -1
-                if marker.exists():
-                    try:
-                        last = int(marker.read_text().strip() or "-1")
-                    except Exception:
-                        last = -1
-                if pct != last:
-                    print(f"[progress] {pct}% ({idx_in+1}/{total})")
-                    try:
-                        marker.write_text(str(pct))
-                    except Exception:
-                        pass
+            if pct % 5 == 0 and pct != last_pct:
+                print(f"[progress] {pct}% ({idx_in+1}/{total})")
+                last_pct = pct
 
-        if downscale != 1.0:
-            frame = cv2.resize(frame, None, fx=downscale, fy=downscale, interpolation=cv2.INTER_AREA)
-
-        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-        if blur and blur > 0:
-            k = max(1, int(blur))
-            if k % 2 == 0:
-                k += 1
-            gray = cv2.GaussianBlur(gray, (k, k), 0)
-
-        # Save frame for reference
-        cv2.imwrite(str(frames_dir / f"frame_{idx_kept:06d}.png"), frame)
-
-        # Initialize state on first kept frame
-        if prev_gray is None:
-            prev_gray = gray
-        if bg_f32 is None:
-            bg_f32 = gray.astype(np.float32)
-            idx_kept += 1
-            continue
-
-        # Motion mask depending on selected mode
-        if (motion_mode or "bg").lower() == "flow":
-            # Dense optical flow (Farnebäck) for illumination-invariant motion
-            flow = cv2.calcOpticalFlowFarneback(
-                prev_gray, gray, None,
-                0.5, 3, 15, 3, 5, 1.2, 0
-            )
-            mag, _ang = cv2.cartToPolar(flow[..., 0], flow[..., 1])
-            med = float(np.median(mag))
-            mad = float(np.median(np.abs(mag - med)))
-            robust_thr = med + (flow_mad_k if flow_mad_k is not None else FLOW_MAD_K) * (1.4826 * mad)
-            pct_thr = float(np.percentile(mag, (flow_pct if flow_pct is not None else FLOW_PCT)))
-            abs_thr = (flow_mag_thresh if flow_mag_thresh is not None else FLOW_MAG_THRESH)
-            thr = max(abs_thr, robust_thr, pct_thr)
-            mask = (mag > thr).astype(np.uint8) * 255
-        else:
-            # Background subtraction (running average) to avoid double-lobes from prev-frame differencing
-            gray_f32 = gray.astype(np.float32)
-            diff = cv2.absdiff(gray_f32, bg_f32)
-            # Threshold (fixed or Otsu if thresh<=0)
-            if thresh is not None and thresh > 0:
-                _, mask = cv2.threshold(diff.astype(np.uint8), int(thresh), 255, cv2.THRESH_BINARY)
-            else:
-                _, mask = cv2.threshold(diff.astype(np.uint8), 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-
-        # Morphological closing to merge leading/trailing lobes into one solid blob
-        if CLOSE_KERNEL and CLOSE_KERNEL > 1:
-            ck = int(CLOSE_KERNEL)
-            if ck % 2 == 0:
-                ck += 1
-            kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (ck, ck))
-            mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
-
-        # Morphology cleanup
-        if erode_iter > 0:
-            mask = cv2.erode(mask, None, iterations=erode_iter)
-        if dilate_iter > 0:
-            mask = cv2.dilate(mask, None, iterations=dilate_iter)
-
-        # Keep only largest connected component (optional) to avoid interpreting split lobes as separate objects
-        if KEEP_LARGEST:
-            contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-            if contours:
-                best = max(contours, key=cv2.contourArea)
-                mask_largest = np.zeros_like(mask)
-                cv2.drawContours(mask_largest, [best], -1, 255, thickness=cv2.FILLED)
-                mask = mask_largest
-
-        # Save binary mask (white = motion)
-        cv2.imwrite(str(masks_dir / f"mask_{idx_kept:06d}.png"), mask)
-
-        # Optional overlay with contours
-        if write_overlay:
-            overlay = frame.copy()
-            contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-            for c in contours:
-                if cv2.contourArea(c) < 25:
-                    continue
-                x, y, w, h = cv2.boundingRect(c)
-                cv2.rectangle(overlay, (x, y), (x + w, y + h), (0, 255, 0), 2)
-            if writer is None:
-                writer = write_video_init(overlay_path, overlay.shape[1], overlay.shape[0], fps / max(1, stride))
-            writer.write(overlay)
-
-        # Always write a black-and-white mask video for localization
-        if mask_writer is None:
-            # Convert to 3-channel for broad codec compatibility
-            mask_writer = write_video_init(mask_video_path, mask.shape[1], mask.shape[0], fps / max(1, stride))
-        mask_bgr = cv2.cvtColor(mask, cv2.COLOR_GRAY2BGR)
-        mask_writer.write(mask_bgr)
-
-        # Update the running background (only used in bg mode)
-        if (motion_mode or "bg").lower() == "bg":
-            gray_f32 = gray.astype(np.float32)
-            cv2.accumulateWeighted(gray_f32, bg_f32, BG_ALPHA)
-        prev_gray = gray
         idx_kept += 1
 
     cap.release()
-    if writer is not None:
+    if write_overlay:
         writer.release()
-    if mask_writer is not None:
-        mask_writer.release()
+    mask_writer.release()
+    if qfp is not None:
+        qfp.close()
 
     print(f"[done] Frames: {idx_kept}  out: {out_dir}")
     if write_overlay:
         print(f"[info] Overlay video: {overlay_path}")
     print(f"[info] Mask video: {mask_video_path}")
 
-
 def main():
-    # If CLI args provided, they override defaults; otherwise use hardcoded config
-    ap = argparse.ArgumentParser(description="Extract frames and generate binary motion masks (white = moving pixels)")
-    ap.add_argument("--input", help="Input video path (e.g., myvideo.mp4). Overrides --scene if provided.")
-    ap.add_argument("--scene", help="Scene folder name under src (e.g., 'wide') to process all videos inside")
-    ap.add_argument("--src", help="Root folder containing scene folders (defaults to <project_root>/src)", default=None)
-    ap.add_argument("--out", help="Output root folder (defaults to mask/<scene> or mask/output)", default=None)
-    ap.add_argument("--stride", type=int, help="Keep every Nth frame", default=None)
-    ap.add_argument("--thresh", type=int, help="Binary threshold", default=None)
-    ap.add_argument("--blur", type=int, help="Gaussian blur kernel size (odd); 0 to disable", default=None)
-    ap.add_argument("--erode", type=int, help="Erode iterations", default=None)
-    ap.add_argument("--dilate", type=int, help="Dilate iterations", default=None)
-    ap.add_argument("--downscale", type=float, help="Resize factor (e.g., 0.5)", default=None)
-    ap.add_argument("--no-overlay", action="store_true", help="Disable overlay video with contours")
-    ap.add_argument("--bg-alpha", type=float, help="Exponential background update rate (0..1)", default=None)
-    ap.add_argument("--close", type=int, help="Morphological closing kernel (odd); 0 to disable", default=None)
-    ap.add_argument("--largest-only", action="store_true", help="Keep only largest connected component")
-    ap.add_argument("--no-largest-only", action="store_true", help="Disable largest component filtering")
-    ap.add_argument("--motion-mode", choices=["bg", "flow"], help="Motion extraction: bg (default) or flow", default=None)
-    ap.add_argument("--flow-mag", type=float, help="Absolute min flow magnitude (px/frame)", default=None)
-    ap.add_argument("--flow-pct", type=float, help="Percentile for flow threshold (0-100)", default=None)
-    ap.add_argument("--flow-mad-k", type=float, help="k for median+ k*MAD robust flow threshold", default=None)
+    ap = argparse.ArgumentParser(description="Real-time-grade motion masking (MOG2/CUDA) with same I/O as original.")
+    ap.add_argument("--input", help="Input video path; if omitted, scans record/output/", default=None)
+    ap.add_argument("--src", help="Root folder containing videos (defaults to <project_root>/record/output)", default=None)
+    ap.add_argument("--out", help="Output root (defaults to mask/output)", default=None)
+    ap.add_argument("--stride", type=int, default=STRIDE)
+    ap.add_argument("--downscale", type=float, default=DOWNSCALE)
+    ap.add_argument("--no-overlay", action="store_true")
+    ap.add_argument("--blur", type=int, default=BLUR)
+    ap.add_argument("--open", type=int, default=OPEN_KERNEL)
+    ap.add_argument("--close", type=int, default=CLOSE_KERNEL)
+    ap.add_argument("--erode", type=int, default=ERODE_ITERS)
+    ap.add_argument("--dilate", type=int, default=DILATE_ITERS)
+    ap.add_argument("--min-component-area", type=int, default=MIN_COMPONENT_AREA)
+    ap.add_argument("--largest-only", action="store_true", help="Force keep largest blob")
+    ap.add_argument("--no-largest-only", action="store_true", help="Keep all blobs above min area")
+    ap.add_argument("--history", type=int, default=MOG2_HISTORY)
+    ap.add_argument("--var", type=float, default=MOG2_VAR_THRESH)
+    ap.add_argument("--shadows", action="store_true", help="Enable MOG2 shadow detection (off by default)")
+    ap.add_argument("--lr", type=float, default=LEARNING_RATE, help="Learning rate; -1 for auto")
+    ap.add_argument("--quality-log", type=str, help="CSV path for metrics")
     args = ap.parse_args()
 
     mask_dir = Path(__file__).resolve().parent
     project_root = mask_dir.parent
 
-    # Resolve output root. Scene outputs always live under mask/output/<scene>
-    if args.out:
-        out_root = Path(args.out)
-    elif args.scene:
-        out_root = mask_dir / OUTPUT_SUBDIR_DEFAULT / args.scene
-    else:
-        out_root = mask_dir / OUTPUT_SUBDIR_DEFAULT
+    # Output root under mask/output
+    out_root = Path(args.out) if args.out else (mask_dir / OUTPUT_SUBDIR_DEFAULT)
     ensure_dir(out_root)
 
-    # Resolve input videos
-    videos = []
+    # Input videos: default to record/output/ (same as your original) :contentReference[oaicite:1]{index=1}
     if args.input:
         videos = [args.input]
-    elif args.scene:
-        src_root = Path(args.src) if args.src else (project_root / "src")
-        scene_dir = src_root / args.scene
-        if not scene_dir.exists() or not scene_dir.is_dir():
-            raise SystemExit(f"Scene folder not found: {scene_dir}")
-        allowed_exts = {".mp4", ".mov", ".avi", ".mkv", ".MP4", ".MOV", ".AVI", ".MKV"}
-        videos = sorted([str(p) for p in scene_dir.iterdir() if p.suffix in allowed_exts and not p.name.startswith('.')])
-        if not videos:
-            raise SystemExit(f"No videos found in scene folder: {scene_dir}")
-        print(f"[info] Processing scene '{args.scene}' with {len(videos)} video(s) from {scene_dir}")
     else:
-        videos = INPUT_VIDEOS
+        src_root = Path(args.src) if args.src else (project_root / "record" / "output")
+        if not src_root.exists() or not src_root.is_dir():
+            raise SystemExit(f"Video folder not found: {src_root}")
+        allowed = {".mp4", ".mov", ".avi", ".mkv", ".MP4", ".MOV", ".AVI", ".MKV"}
+        videos = sorted([str(p) for p in src_root.iterdir() if p.suffix in allowed and not p.name.startswith('.')])
         if not videos:
-            raise SystemExit("No inputs provided. Use --scene <name> or --input <video>.")
+            raise SystemExit(f"No videos found in folder: {src_root}")
+        print(f"[info] Processing {len(videos)} video(s) from {src_root}")
+
+    # Resolve keep-largest flag precedence (default True like now)
+    keep_largest = True
+    if args.no_largest_only:
+        keep_largest = False
+    elif args.largest_only:
+        keep_largest = True
 
     for vid in videos:
         if not vid:
@@ -280,19 +298,27 @@ def main():
         process_video(
             input_path=vid,
             out_root=out_root,
-            stride=max(1, args.stride if args.stride is not None else STRIDE),
-            thresh=int(args.thresh if args.thresh is not None else THRESHOLD),
-            blur=int(args.blur if args.blur is not None else BLUR),
-            erode_iter=max(0, int(args.erode if args.erode is not None else ERODE_ITERS)),
-            dilate_iter=max(0, int(args.dilate if args.dilate is not None else DILATE_ITERS)),
-            downscale=float(args.downscale if args.downscale is not None else DOWNSCALE),
+            stride=max(1, int(args.stride)),
+            downscale=float(args.downscale),
             write_overlay=(False if args.no_overlay else WRITE_OVERLAY),
-            motion_mode=(args.motion_mode if args.motion_mode is not None else MOTION_MODE),
-            flow_mag_thresh=(float(args.flow_mag) if args.flow_mag is not None else None),
-            flow_pct=(float(args.flow_pct) if args.flow_pct is not None else None),
-            flow_mad_k=(float(args.flow_mad_k) if args.flow_mad_k is not None else None),
+            blur=int(args.blur),
+            open_kernel=int(args.open),
+            close_kernel=int(args.close),
+            erode_iter=max(0, int(args.erode)),
+            dilate_iter=max(0, int(args.dilate)),
+            min_component_area=int(args.min_component_area),
+            keep_largest=keep_largest,
+            mog2_history=int(args.history),
+            mog2_var=float(args.var),
+            mog2_shadows=bool(args.shadows),
+            learning_rate=float(args.lr),
+            quality_log_path=(Path(args.quality_log) if args.quality_log else None),
         )
 
-
 if __name__ == "__main__":
+    # Jetson: fewer CPU threads can sometimes reduce scheduling overhead
+    try:
+        cv2.setNumThreads(2)
+    except Exception:
+        pass
     main()

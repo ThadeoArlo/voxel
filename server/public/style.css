@@ -36,7 +36,6 @@ body {
 	display: none;
 }
 #hud input[type='file'],
-#hud select,
 #hud button {
 	display: block;
 	margin-top: 6px;
@@ -52,25 +51,6 @@ button {
 }
 button:hover {
 	background: #444;
-}
-.save-btn {
-	border-color: #777;
-	background: #555;
-	color: #eee;
-}
-.setup3-btn {
-	border-color: #00aaff;
-	background: #004466;
-}
-.setup3-btn:hover {
-	background: #006688;
-}
-.setup2-btn {
-	border-color: #ff4444;
-	background: #661a1a;
-}
-.setup2-btn:hover {
-	background: #882222;
 }
 #flash {
 	position: absolute;
@@ -145,20 +125,6 @@ button:hover {
 	border-radius: 50%;
 	margin-right: 6px;
 	display: inline-block;
-}
-
-/* Param rows */
-.params-grid {
-	display: grid;
-	grid-template-columns: auto 80px 1fr;
-	align-items: center;
-	column-gap: 8px;
-}
-.params-grid label {
-	white-space: nowrap;
-}
-.params-grid input[type='number'] {
-	width: 80px;
 }
 
 /* Smaller, crisper axis labels */
