@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-import os, json, glob
+import os, json, glob, re
 # --- Default settings (edit here for project-wide defaults) ---
 # Real camera defaults - tuned for robustness
 DEFAULT_MIN_AREA = 20   # allow small blobs (e.g., cursor) while filtering noise
@@ -422,11 +422,12 @@ def _discover_scenes_under_mask_root(mask_root: Path):
 
 def main():
     ap = argparse.ArgumentParser(description="Reconstruct a 3D track from three mask folders and camera config")
+    ap.add_argument("output_folder", nargs="?", help="Output folder name (e.g., output1, output2). Extracts number to find mask folders and name output file.")
     ap.add_argument("--scene", help="Scene name under mask/output (e.g., A1, B1)")
     ap.add_argument("--mask-root", default="mask/output", help="Root folder containing mask outputs")
     ap.add_argument("--masks", nargs=3, help="Explicit three mask folders (overrides --scene)")
     ap.add_argument("--config", help="cam_config.json with exactly 3 cameras")
-    ap.add_argument("--out", default="render/output", help="Output folder (or folder per scene)")
+    ap.add_argument("--out", default=None, help="Output folder (or folder per scene). If not provided and output_folder is given, uses render/out/out{num}.json")
     ap.add_argument("--min-area", type=int, default=DEFAULT_MIN_AREA, help="Min area for largest-component centroid")
     ap.add_argument("--close-kernel", type=int, default=DEFAULT_CLOSE_KERNEL, help="Morphological close kernel (odd pixels)")
     ap.add_argument("--reproj-thresh", type=float, default=DEFAULT_REPROJ_THRESH, help="Reprojection error threshold in pixels (triple)")
@@ -441,8 +442,50 @@ def main():
     default_config = project_root / "render/cam_config.json"
     config_path = Path(args.config) if args.config else default_config
 
+    # If output_folder is provided, extract number and set up paths
+    if args.output_folder:
+        # Extract number from output_folder (e.g., "output1" -> "1")
+        match = re.search(r'(\d+)$', args.output_folder)
+        if not match:
+            raise SystemExit(f"Could not extract number from output folder name: {args.output_folder}")
+        output_num = match.group(1)
+        
+        # If output folder specified, use render/out/out{num}.json
+        if args.out is None:
+            out_dir = render_dir / "out"
+            out_dir.mkdir(parents=True, exist_ok=True)
+            args.out = str(out_dir / f"out{output_num}.json")
+        
+        # If scene not provided, try to find masks based on the video names (1, 2, 3)
+        if not args.scene and not args.masks:
+            # Look for mask folders: mask/output/1/masks, mask/output/2/masks, mask/output/3/masks
+            mask_root_path = project_root / args.mask_root
+            mask_folders = []
+            for vid_num in ["1", "2", "3"]:
+                mask_folder = mask_root_path / vid_num / "masks"
+                if not mask_folder.exists():
+                    # Try alternative: just mask_root_path / vid_num
+                    mask_folder = mask_root_path / vid_num
+                    if not mask_folder.exists():
+                        raise SystemExit(f"Mask folder not found: {mask_folder}")
+                mask_folders.append(mask_folder)
+            
+            print(f"[info] Using mask folders from output{output_num}:")
+            for mf in mask_folders:
+                print(f"  {mf}")
+            
+            reconstruct_from_masks(mask_folders, config_path, Path(args.out), select_names=None,
+                                  min_area=int(args.min_area), close_kernel=int(args.close_kernel),
+                                  reproj_thresh_px=float(args.reproj_thresh),
+                                  pairwise_reproj_thresh_px=(float(args.pairwise_reproj_thresh) if args.pairwise_reproj_thresh is not None else None),
+                                  min_baseline_deg=float(args.min_baseline_deg),
+                                  log_stats=bool(args.log_stats), verbose=bool(args.verbose))
+            return
+
     if args.masks:
         mask_folders = [Path(m) for m in args.masks]
+        if args.out is None:
+            raise SystemExit("--out must be specified when using --masks")
         out_dir = Path(args.out)
         print("[info] Reconstructing from explicit mask folders")
         # If config has more than 3 cameras, no selection is applied here; pass select_names=None
@@ -456,6 +499,8 @@ def main():
 
     # Auto mode: no scene or masks provided -> scan mask/output and process all discovered scenes
     mask_root = Path(args.mask_root)
+    if args.out is None:
+        args.out = "render/output"
     out_root = Path(args.out)
     if not args.scene:
         scenes = _discover_scenes_under_mask_root(mask_root)

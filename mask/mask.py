@@ -244,8 +244,9 @@ def process_video(
 
 def main():
     ap = argparse.ArgumentParser(description="Real-time-grade motion masking (MOG2/CUDA) with same I/O as original.")
-    ap.add_argument("--input", help="Input video path; if omitted, scans record/output/", default=None)
-    ap.add_argument("--src", help="Root folder containing videos (defaults to <project_root>/record/output)", default=None)
+    ap.add_argument("output_folder", nargs="?", help="Output folder name (e.g., output1, output2). If omitted, uses default behavior.")
+    ap.add_argument("--input", help="Input video path; if omitted, scans record/{output_folder}/", default=None)
+    ap.add_argument("--src", help="Root folder containing videos (defaults to <project_root>/record/{output_folder})", default=None)
     ap.add_argument("--out", help="Output root (defaults to mask/output)", default=None)
     ap.add_argument("--stride", type=int, default=STRIDE)
     ap.add_argument("--downscale", type=float, default=DOWNSCALE)
@@ -272,11 +273,16 @@ def main():
     out_root = Path(args.out) if args.out else (mask_dir / OUTPUT_SUBDIR_DEFAULT)
     ensure_dir(out_root)
 
-    # Input videos: default to record/output/ (same as your original) :contentReference[oaicite:1]{index=1}
+    # Input videos: default to record/output_folder/ if specified, else record/output/
     if args.input:
         videos = [args.input]
     else:
-        src_root = Path(args.src) if args.src else (project_root / "record" / "output")
+        # Use output_folder if provided, otherwise default to "output"
+        record_folder = args.output_folder if args.output_folder else "output"
+        if args.src:
+            src_root = Path(args.src)
+        else:
+            src_root = project_root / "record" / record_folder
         if not src_root.exists() or not src_root.is_dir():
             raise SystemExit(f"Video folder not found: {src_root}")
         allowed = {".mp4", ".mov", ".avi", ".mkv", ".MP4", ".MOV", ".AVI", ".MKV"}

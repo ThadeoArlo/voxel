@@ -15,7 +15,7 @@ AUTO_DISCOVER = True
 CAMERA_INDICES = [0, 1, 2]
 
 # Output directory and filenames (saved as MP4)
-OUTPUT_DIR = Path(__file__).parent / "rec"
+OUTPUT_BASE_DIR = Path(__file__).parent
 OUTPUT_FILENAMES = ["1.mp4", "2.mp4", "3.mp4"]
 
 # Duration of recording in seconds
@@ -182,10 +182,23 @@ def record_from_camera(source, output_path: str, duration_seconds: float, start_
         print(f"[{source}] Done.")
 
 
+def get_next_output_dir():
+    """Find the next available output directory (output1, output2, etc.)."""
+    base = OUTPUT_BASE_DIR
+    i = 1
+    while True:
+        output_dir = base / f"output{i}"
+        if not output_dir.exists():
+            output_dir.mkdir(parents=True, exist_ok=True)
+            print(f"Creating new output directory: {output_dir}")
+            return output_dir
+        i += 1
+
+
 def main() -> None:
     print("Running on: Jetson (Linux)")
     
-    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+    OUTPUT_DIR = get_next_output_dir()
 
     # Build list of sources
     if AUTO_DISCOVER:
@@ -225,11 +238,40 @@ def main() -> None:
     # Release all threads to start recording at the same instant
     start_barrier.wait()
 
+    # Show a simple overall time-based progress bar while recording
+    start_time = time.time()
+    total = float(DURATION_SECONDS)
+    last_pct = -1
+    bar_width = 30
+    try:
+        while True:
+            elapsed = time.time() - start_time
+            if elapsed < 0:
+                elapsed = 0.0
+            if elapsed > total:
+                elapsed = total
+            pct = int((elapsed / max(1e-6, total)) * 100)
+            # throttle to ~10 updates per second and avoid redundant prints
+            if pct != last_pct:
+                filled = int((elapsed / max(1e-6, total)) * bar_width)
+                bar = "#" * filled + "-" * (bar_width - filled)
+                print(f"\r[record] [{bar}] {elapsed:4.1f}/{total:.0f}s  {pct:3d}%", end="", flush=True)
+                last_pct = pct
+            if elapsed >= total:
+                break
+            time.sleep(0.1)
+    except KeyboardInterrupt:
+        print("\nInterrupted by user. Stopping...")
+    finally:
+        # Ensure the progress line ends cleanly
+        print()
+
+    # Wait for all camera threads to finish
     try:
         for t in threads:
             t.join()
     except KeyboardInterrupt:
-        print("Interrupted by user. Stopping...")
+        print("Interrupted by user while joining threads.")
 
     print("All recordings complete.")
 
